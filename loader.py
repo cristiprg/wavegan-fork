@@ -1,6 +1,55 @@
 import tensorflow as tf
 
 
+def f0(): return tf.constant('0', dtype=tf.string)
+
+
+def f1(): return tf.constant('1', dtype=tf.string)
+
+
+def f2(): return tf.constant('2', dtype=tf.string)
+
+
+def f3(): return tf.constant('3', dtype=tf.string)
+
+
+def f4(): return tf.constant('4', dtype=tf.string)
+
+
+def f5(): return tf.constant('5', dtype=tf.string)
+
+
+def f6(): return tf.constant('6', dtype=tf.string)
+
+
+def f7(): return tf.constant('7', dtype=tf.string)
+
+
+def f8(): return tf.constant('8', dtype=tf.string)
+
+
+def f9(): return tf.constant('9', dtype=tf.string)
+
+
+def f_error(): return tf.constant('-1', dtype=tf.string)  # TODO: raise error?
+
+
+def single_label_to_int(label):
+  pred_fn_pairs = {
+    tf.equal(label, "Zero"): f0,
+    tf.equal(label, "One"): f1,
+    tf.equal(label, "Two"): f2,
+    tf.equal(label, "Three"): f3,
+    tf.equal(label, "Four"): f4,
+    tf.equal(label, "Five"): f5,
+    tf.equal(label, "Six"): f6,
+    tf.equal(label, "Seven"): f7,
+    tf.equal(label, "Eight"): f8,
+    tf.equal(label, "Nine"): f9,
+  }
+  return tf.string_to_number(tf.case(pred_fn_pairs, default=f_error, exclusive=True), out_type=tf.int32)
+
+
 """
   Data loader
   fps: List of tfrecords
@@ -18,7 +67,8 @@ def get_batch(
     first_window=False,
     repeat=True,
     labels=False,
-    buffer_size=8192):
+    buffer_size=8192,
+    initializable=False):
   def _mapper(example_proto):
     features = {'samples': tf.FixedLenSequenceFeature([1], tf.float32, allow_missing=True)}
     if labels:
@@ -28,6 +78,7 @@ def get_batch(
     wav = example['samples']
     if labels:
       label = tf.reduce_join(example['label'], 0)
+      label = single_label_to_int(label)
 
     if first_window:
       # Use first window
@@ -59,6 +110,12 @@ def get_batch(
   dataset = dataset.apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
   if repeat:
     dataset = dataset.repeat()
-  iterator = dataset.make_one_shot_iterator()
+
+  # dataset.prefetch(1)
+  if not initializable:
+    iterator = dataset.make_one_shot_iterator()
+  else:
+    return dataset.make_initializable_iterator()
+
 
   return iterator.get_next()
