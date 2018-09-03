@@ -5,9 +5,12 @@ from hyperopt import hp, fmin, STATUS_OK, STATUS_FAIL, Trials, tpe
 import hyperopt.pyll.stochastic
 
 import sys
+import datetime
 import os
 import cPickle as pickle
 from pprint import pprint
+import json
+import math
 
 import loader
 from specgan import SpecGANDiscriminator
@@ -20,7 +23,7 @@ logging.set_verbosity(tf.logging.INFO)
 
 DRY_RUN = True  # Whether or not to run just one training iteration (as oposed to multiple epochs)
 MAX_EPOCHS = 20
-mean_delta_accuracy_threshold = .5   # Average of last 3 delta accuracies has to be >= 1
+mean_delta_accuracy_threshold = .001   # Average of last 3 delta accuracies has to be >= 1
 
 # /mnt/raid/ni/dnn/install_cuda-9.0/../build/cudnn-9.0-v7/lib64:/usr/local/cuda-9.0/lib64:/mnt/raid/ni/dnn/install_cuda-9.0/lib:/mnt/raid/ni/dnn/install_cuda-9.0/../build/cudnn-9.0-v7.1/lib64:/usr/local/cuda-9.0/lib64:/mnt/raid/ni/dnn/install_cuda-9.0/lib:/mnt/raid/ni/dnn/install_cuda-8.0/../build/cudnn-8.0/lib64:/usr/local/cuda-8.0/lib64:/mnt/raid/ni/dnn/install_cuda-8.0/lib
 
@@ -109,9 +112,9 @@ def get_optimizer(params, D_loss):
     return d_trainer
 
 
-def evaluate_model_process(params, q):
+def evaluate_model_process(params, train_data_percentage, seed, q):
 
-    logging.info("Running configuration %s", params)
+    logging.info("Running configuration %s, data_size %s, seed %s", params, str(train_data_percentage), str(seed))
 
     batch_size = params['batch_size']
 
@@ -125,7 +128,7 @@ def evaluate_model_process(params, q):
 
     with tf.name_scope('loader'):
         # Training is the only one that repeats
-        training_iterator = loader.get_batch(training_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False, initializable=True)
+        training_iterator = loader.get_batch(training_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False, initializable=True, seed=seed)
         x_wav_training, labels_training = training_iterator.get_next()
         x_training = t_to_f(x_wav_training, args.data_moments_mean, args.data_moments_std)
 
@@ -153,6 +156,9 @@ def evaluate_model_process(params, q):
     saver = tf.train.Saver(var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='D'))
     latest_ckpt_fp = tf.train.latest_checkpoint(args.train_dir)
 
+    tensorboard_session_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "_" + str(
+        train_data_percentage) + "_" + str(seed)
+
     logging.info("Creating session ... ")
     with tf.train.MonitoredTrainingSession(
             checkpoint_dir=None,
@@ -164,18 +170,27 @@ def evaluate_model_process(params, q):
         logging.info("Entering main loop ...")
         accuracies = []
 
-        logdir = "./tensorboard_development/"
+        logdir = "./tensorboard_specgan_cnn/" + str(tensorboard_session_name) + "/"
         writer = tf.summary.FileWriter(logdir, sess.graph)
 
         for current_epoch in range(MAX_EPOCHS):
             sess.run(training_iterator.initializer)
+            current_step = -1  # this step is the step within an epoch, therefore different from the global step
             try:
                 while True:
                     sess.run(cnn_trainer)
+
+                    current_step += 1
+
+                    # Stop training after x% of training data seen
+                    if current_step * batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
+                        break
+
             except tf.errors.OutOfRangeError:
                 # End of training dataset
                 pass
 
+            logging.info("Stopped training at epoch step: " + str(current_step))
             # Validation
             sess.run([acc_reset_op, validation_iterator.initializer])
             try:
@@ -206,15 +221,19 @@ def evaluate_model_process(params, q):
 
         })
 
-        logging.info("Result: %s %s", params, str(accuracies[-1]))
+        logging.info("Result: %s %s %s %s", params, train_data_percentage, seed, str(accuracies[-1]))
 
 
 def evaluate_model(params):
     q = multiprocessing.Queue()
-    p = multiprocessing.Process(target=evaluate_model_process, args=(params,q))
-    p.start()
-    res = q.get()
-    p.join()
+
+    for train_data_percentage in [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]:
+        for seed in range(10):
+            p = multiprocessing.Process(target=evaluate_model_process, args=(params, train_data_percentage, seed, q))
+            p.start()
+            res = q.get()
+            p.join()
+
     return res
 
 
@@ -370,25 +389,33 @@ if __name__ == '__main__':
 
     # latest_ckpt_fp = tf.train.latest_checkpoint(args.data_dir)
 
-    trials = Trials()
-    best = fmin(fn=evaluate_model, space=define_search_space(),
-                algo=tpe.suggest, max_evals=100, trials=trials)
-
-    with open("hyperopt.txt", "w") as fout:
-        fout.write("Best = \n")
-        pprint.pprint(best, fout)
-        fout.write('Best accuracy = %s\n' % str(best['result']['loss']))
-
-        fout.write("All trials = \n")
-        for trial in trials.trials:
-            pprint.pprint(trial, fout)
+    # trials = Trials()
+    # best = fmin(fn=evaluate_model, space=define_search_space(),
+    #             algo=tpe.suggest, max_evals=100, trials=trials)
+    #
+    # with open("hyperopt.txt", "w") as fout:
+    #     fout.write("Best = \n")
+    #     pprint.pprint(best, fout)
+    #     fout.write('Best accuracy = %s\n' % str(best['result']['loss']))
+    #
+    #     fout.write("All trials = \n")
+    #     for trial in trials.trials:
+    #         pprint.pprint(trial, fout)
 
 
     # params = {}
-    # params['batch_size'] = 64
-    # params['layers_transferred'] = 2
-    # params['optimizer'] = 'SGD'
-    # params['learning_rate_base_SGD'] = 0.1
-    # params['learning_rate_mode'] = 'constant'
-    # evaluate_model(params)
+    # params['batch_size'] = 128
+    # params['layers_transferred'] = 3
+    # params['optimizer'] = 'Adam'
+    # params['optimizer']['Adam']['learning_rate_base'] = 0.001
+    # params['layer_1_size'] = 32
+    # params['layer_2'] = False
+    # params['learning_rate_mode'] = 'decaying'
 
+    s = '{ "batch_size": 128, "layers_transferred": 3, "layer_2": "False", "learning_rate_mode": "decaying",\
+    "optimizer": {"Adam": {"learning_rate_base": 0.001}}}'
+    s = json.loads(s)
+    s['layer_2'] = False
+    pprint.pprint(s)
+
+    evaluate_model(s)
