@@ -20,6 +20,7 @@ import math
 
 import loader
 from specgan import SpecGANDiscriminator
+from wavegan import WaveGANDiscriminator
 from train_specgan import t_to_f, _WINDOW_LEN, _FS
 
 import pprint
@@ -30,6 +31,8 @@ logging.set_verbosity(tf.logging.INFO)
 DRY_RUN = True  # Whether or not to run just one training iteration (as oposed to multiple epochs)
 MAX_EPOCHS = 20
 mean_delta_accuracy_threshold = .001   # Average of last 3 delta accuracies has to be >= 1
+processing_specgan = False
+perform_feature_extraction = False
 
 args = None  # TODO: make this variable visible in subprocess
 # /mnt/raid/ni/dnn/install_cuda-9.0/../build/cudnn-9.0-v7/lib64:/usr/local/cuda-9.0/lib64:/mnt/raid/ni/dnn/install_cuda-9.0/lib:/mnt/raid/ni/dnn/install_cuda-9.0/../build/cudnn-9.0-v7.1/lib64:/usr/local/cuda-9.0/lib64:/mnt/raid/ni/dnn/install_cuda-9.0/lib:/mnt/raid/ni/dnn/install_cuda-8.0/../build/cudnn-8.0/lib64:/usr/local/cuda-8.0/lib64:/mnt/raid/ni/dnn/install_cuda-8.0/lib
@@ -74,7 +77,7 @@ def get_cnn_model(params, x, validation=False):
     batch_size = params['batch_size']
     layers_transferred = params['layers_transferred']
     with tf.variable_scope('D', reuse=validation):
-        D_x_training = SpecGANDiscriminator(x)  # leave the other parameters default
+        D_x_training = SpecGANDiscriminator(x) if processing_specgan else WaveGANDiscriminator(x)  # leave the other parameters default
 
         last_conv_op_name = 'D_x_'+str('validation' if validation else 'training')+'/D/Maximum_' + str(layers_transferred)
         last_conv_tensor = tf.get_default_graph().get_operation_by_name(last_conv_op_name).values()[0]
@@ -156,10 +159,16 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
 
     # Get the discriminator and put extra layers
     with tf.name_scope('D_x_training'):
-        cnn_training = get_cnn_model(params, x_training, validation=False)
+        if processing_specgan:
+            cnn_training = get_cnn_model(params, x_training, validation=False)
+        else:
+            cnn_training = get_cnn_model(params, x_wav_training, validation=False)
 
     with tf.name_scope('D_x_validation'):
-        cnn_validation = get_cnn_model(params, x_validation, validation=True)
+        if processing_specgan:
+            cnn_validation = get_cnn_model(params, x_validation, validation=True)
+        else:
+            cnn_validation = get_cnn_model(params, x_wav_validation, validation=True)
 
     # Define loss and optimizers
     cnn_loss = tf.nn.softmax_cross_entropy_with_logits(logits=cnn_training, labels=tf.one_hot(labels_training, 10))
@@ -191,52 +200,53 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
         status = STATUS_OK
         logging.info("Entering main loop ...")
 
-        logdir = "./tensorboard_specgan_cnn/" + str(tensorboard_session_name) + "/"
+        logdir = "./tensorboard_wavegan_cnn/" + str(tensorboard_session_name) + "/"
         writer = tf.summary.FileWriter(logdir, sess.graph)
 
         # Step 1: Train decision layer only
-        accuracies = []
-        for current_epoch in range(MAX_EPOCHS):
-            sess.run(training_iterator.initializer)
-            current_step = -1  # this step is the step within an epoch, therefore different from the global step
-            try:
-                while True:
-                    sess.run(d_decision_trainer)
+        if perform_feature_extraction:
+            accuracies = []
+            for current_epoch in range(MAX_EPOCHS):
+                sess.run(training_iterator.initializer)
+                current_step = -1  # this step is the step within an epoch, therefore different from the global step
+                try:
+                    while True:
+                        sess.run(d_decision_trainer)
 
-                    current_step += 1
+                        current_step += 1
 
-                    # Stop training after x% of training data seen
-                    if current_step * batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
+                        # Stop training after x% of training data seen
+                        if current_step * batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
+                            break
+
+                except tf.errors.OutOfRangeError:
+                    # End of training dataset
+                    pass
+
+                logging.info("Stopped training at epoch step: " + str(current_step))
+                # Validation
+                sess.run([acc_reset_op, validation_iterator.initializer])
+                try:
+                    while True:
+                        sess.run(acc_update_op)
+                except tf.errors.OutOfRangeError:
+                        # End of dataset
+                        current_accuracy = sess.run(acc_op)
+                        logging.info("Feature extraction epoch" + str(current_epoch) + " accuracy = " + str(current_accuracy))
+                        accuracies.append(current_accuracy)
+
+                # Early stopping?
+                if len(accuracies) >= 4:
+                    mean_delta_accuracy = (accuracies[-1] - accuracies[-4]) * 1.0 / 3
+
+                    if mean_delta_accuracy < mean_delta_accuracy_threshold:
+                        logging.info("Early stopping, mean_delta_accuracy = " + str(mean_delta_accuracy))
                         break
 
-            except tf.errors.OutOfRangeError:
-                # End of training dataset
-                pass
+                if current_epoch >= MAX_EPOCHS:
+                    logging.info("Stopping after " + str(MAX_EPOCHS) + " epochs!")
 
-            logging.info("Stopped training at epoch step: " + str(current_step))
-            # Validation
-            sess.run([acc_reset_op, validation_iterator.initializer])
-            try:
-                while True:
-                    sess.run(acc_update_op)
-            except tf.errors.OutOfRangeError:
-                    # End of dataset
-                    current_accuracy = sess.run(acc_op)
-                    logging.info("Feature extraction epoch" + str(current_epoch) + " accuracy = " + str(current_accuracy))
-                    accuracies.append(current_accuracy)
-
-            # Early stopping?
-            if len(accuracies) >= 4:
-                mean_delta_accuracy = (accuracies[-1] - accuracies[-4]) * 1.0 / 3
-
-                if mean_delta_accuracy < mean_delta_accuracy_threshold:
-                    logging.info("Early stopping, mean_delta_accuracy = " + str(mean_delta_accuracy))
-                    break
-
-            if current_epoch >= MAX_EPOCHS:
-                logging.info("Stopping after " + str(MAX_EPOCHS) + " epochs!")
-
-        logging.info("Result feature extraction: %s %s %s %s", params, train_data_percentage, seed, str(accuracies[-1]))
+            logging.info("Result feature extraction: %s %s %s %s", params, train_data_percentage, seed, str(accuracies[-1]))
 
         # Step 2: Continue training everything
         accuracies = []
@@ -290,6 +300,15 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
         })
 
         logging.info("Result fine tuning: %s %s %s %s", params, train_data_percentage, seed, str(accuracies[-1]))
+
+
+def evaluate_model_hyperopt(params):
+    q = multiprocessing.Queue()
+    p = multiprocessing.Process(target=evaluate_model_process, args=(params, 100, 0, q))
+    p.start()
+    res = q.get()
+    p.join()
+    return res
 
 
 def evaluate_model(params):
@@ -443,13 +462,14 @@ if __name__ == '__main__':
                            help='Dataset moments')
 
     # parser.set_defaults(
-    #     train_dir="D:\\Scoala\\Drums\\models\\train_specgan\\",
-    #     data_dir="D:\\Scoala\\Drums\\data\\sc09\\",
-    #     data_moments_fp="D:\\Scoala\\Drums\\models\\train_specgan\\moments.pkl"
-    # )
+    #     #     train_dir="D:\\Scoala\\Drums\\models\\train_specgan\\",
+    #     #     data_dir="D:\\Scoala\\Drums\\data\\sc09\\",
+    #     #     data_moments_fp="D:\\Scoala\\Drums\\models\\train_specgan\\moments.pkl"
+    #     # )
 
     parser.set_defaults(
-        train_dir="/mnt/antares_raid/home/cristiprg/tmp/pycharm_project_wavegan/train_specgan/",
+        train_dir="/mnt/antares_raid/home/cristiprg/tmp/pycharm_project_wavegan/" +
+                  "train_specgan/" if processing_specgan else "train_wavegan",
         data_dir="/mnt/raid/data/ni/dnn/cristiprg/sc09/",
         data_moments_fp="/mnt/antares_raid/home/cristiprg/tmp/pycharm_project_wavegan/train_specgan/moments.pkl"
     )
@@ -457,24 +477,24 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     with open(args.data_moments_fp, 'rb') as f:
-      _mean, _std = pickle.load(f, encoding='latin1')
+      _mean, _std = pickle.load(f)
     setattr(args, 'data_moments_mean', _mean)
     setattr(args, 'data_moments_std', _std)
 
     # latest_ckpt_fp = tf.train.latest_checkpoint(args.data_dir)
 
-    # trials = Trials()
-    # best = fmin(fn=evaluate_model, space=define_search_space(),
-    #             algo=tpe.suggest, max_evals=100, trials=trials)
-    #
-    # with open("hyperopt.txt", "w") as fout:
-    #     fout.write("Best = \n")
-    #     pprint.pprint(best, fout)
-    #     fout.write('Best accuracy = %s\n' % str(best['result']['loss']))
-    #
-    #     fout.write("All trials = \n")
-    #     for trial in trials.trials:
-    #         pprint.pprint(trial, fout)
+    trials = Trials()
+    best = fmin(fn=evaluate_model_hyperopt, space=define_search_space(),
+                algo=tpe.suggest, max_evals=100, trials=trials)
+
+    with open("hyperopt.txt", "w") as fout:
+        fout.write("Best = \n")
+        pprint.pprint(best, fout)
+        fout.write('Best accuracy = %s\n' % str(best['result']['loss']))
+
+        fout.write("All trials = \n")
+        for trial in trials.trials:
+            pprint.pprint(trial, fout)
 
 
     # params = {}
@@ -486,10 +506,10 @@ if __name__ == '__main__':
     # params['layer_2'] = False
     # params['learning_rate_mode'] = 'decaying'
 
-    s = '{ "batch_size": 128, "layers_transferred": 3, "layer_2": "False", "learning_rate_mode": "decaying",\
-    "optimizer": {"Adam": {"learning_rate_base": 0.001}}}'
-    s = json.loads(s)
-    s['layer_2'] = False
-    pprint.pprint(s)
-
-    evaluate_model(s)
+    # s = '{ "batch_size": 128, "layers_transferred": 3, "layer_2": "False", "learning_rate_mode": "decaying",\
+    # "optimizer": {"Adam": {"learning_rate_base": 0.001}}}'
+    # s = json.loads(s)
+    # s['layer_2'] = False
+    # pprint.pprint(s)
+    #
+    # evaluate_model(s)
