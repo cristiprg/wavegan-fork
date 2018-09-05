@@ -68,7 +68,8 @@ def get_batch(
     repeat=True,
     labels=False,
     buffer_size=8192,
-    initializable=False):
+    initializable=False,
+    seed=0):
   def _mapper(example_proto):
     features = {'samples': tf.FixedLenSequenceFeature([1], tf.float32, allow_missing=True)}
     if labels:
@@ -106,7 +107,7 @@ def get_batch(
   dataset = tf.data.TFRecordDataset(fps)
   dataset = dataset.map(_mapper)
   if repeat:
-    dataset = dataset.shuffle(buffer_size=buffer_size)
+    dataset = dataset.shuffle(buffer_size=buffer_size, seed=seed)
   dataset = dataset.apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
   if repeat:
     dataset = dataset.repeat()
