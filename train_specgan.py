@@ -1,9 +1,20 @@
-import cPickle as pickle
+try:
+    import cPickle as pickle
+except ModuleNotFoundError:
+    import pickle
+
+import sys
+PYTHON_VERSION = 2
+if sys.version_info[0] == 3:
+    PYTHON_VERSION = 3
+    from functools import reduce
+
 import os
 import time
 
 import numpy as np
 import tensorflow as tf
+import math
 
 import loader
 from specgan import SpecGANGenerator, SpecGANDiscriminator
@@ -18,7 +29,8 @@ _D_Z = 100
 _CLIP_NSTD = 3.
 _LOG_EPS = 1e-6
 
-
+train_dataset_size = 18620
+train_data_percentage = 90
 """
   Convert raw audio to spectrogram
 """
@@ -43,11 +55,16 @@ def t_to_f(x, X_mean, X_std):
   Griffin-Lim
 """
 def invert_spectra_griffin_lim(X_mag, nfft, nhop, ngl):
+    print("X_mag.shape = " + str(X_mag.shape))
     X = tf.complex(X_mag, tf.zeros_like(X_mag))
+    print("X.shape = " + str(X.shape))
 
     def b(i, X_best):
+        print("X_best.shape = " + str(X_best.shape))
         x = tf.contrib.signal.inverse_stft(X_best, nfft, nhop)
+        print("x.shape = " + str(x.shape))
         X_est = tf.contrib.signal.stft(x, nfft, nhop)
+        print("X_est.shape = " + str(X_est.shape))
         phase = X_est / tf.cast(tf.maximum(1e-8, tf.abs(X_est)), tf.complex64)
         X_best = X * phase
         return i + 1, X_best
@@ -66,11 +83,17 @@ def invert_spectra_griffin_lim(X_mag, nfft, nhop, ngl):
   Estimate raw audio for spectrogram
 """
 def f_to_t(X_norm, X_mean, X_std, ngl=16):
+  print("X_norm.shape = %s" % str(X_norm.shape))
   X_norm = X_norm[:, :, :, 0]
+  print("X_norm.shape = %s" % str(X_norm.shape))
   X_norm = tf.pad(X_norm, [[0,0], [0,0], [0,1]])
+  print("X_norm.shape = %s" % str(X_norm.shape))
   X_norm *= _CLIP_NSTD
+  print("X_norm.shape = %s" % str(X_norm.shape))
   X_lmag = (X_norm * X_std) + X_mean
+  print("X_lmag.shape = %s" % str(X_lmag.shape))
   X_mag = tf.exp(X_lmag)
+  print("X_mag.shape = %s" % str(X_mag.shape))
 
   x = invert_spectra_griffin_lim(X_mag, 256, 128, ngl)
   x = tf.reshape(x, [-1, _WINDOW_LEN, 1])
@@ -97,8 +120,11 @@ def f_to_img(X_norm):
 """
 def train(fps, args):
   with tf.name_scope('loader'):
-    x_wav = loader.get_batch(fps, args.train_batch_size, _WINDOW_LEN, args.data_first_window)
+    training_iterator = loader.get_batch(fps, args.train_batch_size, _WINDOW_LEN, args.data_first_window, repeat=False, initializable=True)
+    x_wav = training_iterator.get_next()
+    print("x_wav.shape = %s" %str(x_wav.shape))
     x = t_to_f(x_wav, args.data_moments_mean, args.data_moments_std)
+    print("x.shape = %s" % str(x.shape))
 
   # Make z vector
   z = tf.random_uniform([args.train_batch_size, _D_Z], -1., 1., dtype=tf.float32)
@@ -109,18 +135,19 @@ def train(fps, args):
   G_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='G')
 
   # Print G summary
-  print '-' * 80
-  print 'Generator vars'
+  print('-' * 80)
+  print('Generator vars')
   nparams = 0
   for v in G_vars:
     v_shape = v.get_shape().as_list()
     v_n = reduce(lambda x, y: x * y, v_shape)
     nparams += v_n
-    print '{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name)
-  print 'Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024))
+    print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
+  print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
 
   # Summarize
   x_gl = f_to_t(x, args.data_moments_mean, args.data_moments_std, args.specgan_ngl)
+  print("x_gl.shape = %s" % str(x_gl.shape))
   G_z_gl = f_to_t(G_z, args.data_moments_mean, args.data_moments_std, args.specgan_ngl)
   tf.summary.audio('x_wav', x_wav, _FS)
   tf.summary.audio('x', x_gl, _FS)
@@ -140,16 +167,16 @@ def train(fps, args):
   D_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='D')
 
   # Print D summary
-  print '-' * 80
-  print 'Discriminator vars'
+  print('-' * 80)
+  print('Discriminator vars')
   nparams = 0
   for v in D_vars:
     v_shape = v.get_shape().as_list()
     v_n = reduce(lambda x, y: x * y, v_shape)
     nparams += v_n
-    print '{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name)
-  print 'Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024))
-  print '-' * 80
+    print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
+  print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
+  print('-' * 80)
 
   # Make fake discriminator
   with tf.name_scope('D_G_z'), tf.variable_scope('D', reuse=True):
@@ -253,14 +280,34 @@ def train(fps, args):
   D_train_op = D_opt.minimize(D_loss, var_list=D_vars)
 
   # Run training
+  current_step = -1
+  scaffold = tf.train.Scaffold(local_init_op=tf.group(tf.local_variables_initializer(), training_iterator.initializer))
   with tf.train.MonitoredTrainingSession(
+      scaffold=scaffold,
       checkpoint_dir=args.train_dir,
       save_checkpoint_secs=args.train_save_secs,
       save_summaries_secs=args.train_summary_secs) as sess:
+    # sess.run(training_iterator.initializer)
     while True:
+      print("Global step: " + str(sess.run(tf.train.get_or_create_global_step())))
       # Train discriminator
-      for i in xrange(args.specgan_disc_nupdates):
-        sess.run(D_train_op)
+      for i in range(args.specgan_disc_nupdates):
+        try:
+          sess.run(D_train_op)
+          current_step += 1
+          # Stop training after x% of training data seen
+          if current_step * args.train_batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
+            print("Stopping at batch: " + str(current_step))
+            current_step = -1
+            sess.run(training_iterator.initializer)
+
+        except tf.errors.OutOfRangeError:
+          # End of training dataset
+          if train_data_percentage != 100:
+            print("ERROR: end of dataset for only part of data! Achieved end of training dataset with train_data_percentage = " + str(train_data_percentage))
+          else:
+            current_step = -1
+            sess.run(training_iterator.initializer)
 
         # Enforce Lipschitz constraint for WGAN
         if D_clip_weights is not None:
@@ -414,7 +461,7 @@ def preview(args):
   while True:
     latest_ckpt_fp = tf.train.latest_checkpoint(args.train_dir)
     if latest_ckpt_fp != ckpt_fp:
-      print 'Preview: {}'.format(latest_ckpt_fp)
+      print('Preview: {}'.format(latest_ckpt_fp))
 
       with tf.Session() as sess:
         saver.restore(sess, latest_ckpt_fp)
@@ -428,7 +475,7 @@ def preview(args):
 
       summary_writer.add_summary(_fetches['summaries'], _step)
 
-      print 'Done'
+      print('Done')
 
       ckpt_fp = latest_ckpt_fp
 
@@ -494,7 +541,7 @@ def incept(args):
   while True:
     latest_ckpt_fp = tf.train.latest_checkpoint(args.train_dir)
     if latest_ckpt_fp != ckpt_fp:
-      print 'Incept: {}'.format(latest_ckpt_fp)
+      print('Incept: {}'.format(latest_ckpt_fp))
 
       sess = tf.Session(graph=gan_graph)
 
@@ -535,7 +582,7 @@ def incept(args):
 
       sess.close()
 
-      print 'Done'
+      print('Done')
 
       ckpt_fp = latest_ckpt_fp
 
@@ -660,7 +707,10 @@ if __name__ == '__main__':
   # Load moments
   if args.mode != 'moments' and args.data_moments_fp is not None:
     with open(args.data_moments_fp, 'rb') as f:
-      _mean, _std = pickle.load(f)
+      if PYTHON_VERSION == 2:
+        _mean, _std = pickle.load(f)
+      else:
+        _mean, _std = pickle.load(f, encoding='latin1')
     setattr(args, 'data_moments_mean', _mean)
     setattr(args, 'data_moments_std', _std)
 

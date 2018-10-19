@@ -1,9 +1,21 @@
-import cPickle as pickle
+try:
+    import cPickle as pickle
+except ModuleNotFoundError:
+    import pickle
+
+import sys
+PYTHON_VERSION = 2
+if sys.version_info[0] == 3:
+    PYTHON_VERSION = 3
+    from functools import reduce
+
+
 import os
 import time
 
 import numpy as np
 import tensorflow as tf
+import math
 
 import loader
 from wavegan import WaveGANGenerator, WaveGANDiscriminator
@@ -16,13 +28,16 @@ _FS = 16000
 _WINDOW_LEN = 16384
 _D_Z = 100
 
-
+train_dataset_size = 18620
+train_data_percentage = 90
 """
   Trains a WaveGAN
 """
 def train(fps, args):
   with tf.name_scope('loader'):
-    x = loader.get_batch(fps, args.train_batch_size, _WINDOW_LEN, args.data_first_window)
+    training_iterator = loader.get_batch(fps, args.train_batch_size, _WINDOW_LEN, args.data_first_window, repeat=False,
+                                         initializable=True)
+    x = training_iterator.get_next()
 
   # Make z vector
   z = tf.random_uniform([args.train_batch_size, _D_Z], -1., 1., dtype=tf.float32)
@@ -175,14 +190,36 @@ def train(fps, args):
   D_train_op = D_opt.minimize(D_loss, var_list=D_vars)
 
   # Run training
+  current_step = -1
+  scaffold = tf.train.Scaffold(local_init_op=tf.group(tf.local_variables_initializer(), training_iterator.initializer))
   with tf.train.MonitoredTrainingSession(
+      scaffold=scaffold,
       checkpoint_dir=args.train_dir,
       save_checkpoint_secs=args.train_save_secs,
       save_summaries_secs=args.train_summary_secs) as sess:
     while True:
       # Train discriminator
-      for i in xrange(args.wavegan_disc_nupdates):
-        sess.run(D_train_op)
+      for i in range(args.wavegan_disc_nupdates):
+        try:
+          sess.run(D_train_op)
+          current_step += 1
+
+          # Stop training after x% of training data seen
+          if current_step * args.train_batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
+            print("Stopping at batch: " + str(current_step))
+            current_step = -1
+            sess.run(training_iterator.initializer)
+
+        except tf.errors.OutOfRangeError:
+          # End of training dataset
+          if train_data_percentage != 100:
+            print(
+              "ERROR: end of dataset for only part of data! Achieved end of training dataset with train_data_percentage = " + str(
+                train_data_percentage))
+          else:
+            current_step = -1
+            sess.run(training_iterator.initializer)
+
 
         # Enforce Lipschitz constraint for WGAN
         if D_clip_weights is not None:
