@@ -459,9 +459,9 @@ if __name__ == '__main__':
 
     # latest_ckpt_fp = tf.train.latest_checkpoint(args.data_dir)
 
-    training_fps = glob.glob(os.path.join(args.data_dir,
+    fps = glob.glob(os.path.join(args.data_dir,
                                           "train") + '*.tfrecord')  # + glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
-    training_fps = sorted(training_fps)
+    fps = sorted(fps)
 
     if perform_hyperopt:
         for global_train_data_percentage in [10, 40, 100]:
@@ -472,11 +472,12 @@ if __name__ == '__main__':
 
                 # logging.info("global_train_data_percentage = " + str(global_train_data_percentage))
 
-                length = len(training_fps)
-                training_fps = training_fps[:(int(global_train_data_percentage / 100.0 * length))]
+                length = len(fps)
+                training_fps = fps[:(int(global_train_data_percentage / 100.0 * length))]
                 setattr(args, 'training_fps', training_fps)
 
                 trials = Trials()
+                evaluated_configs = {}
                 best = fmin(fn=evaluate_model_hyperopt, space=define_search_space(),
                             algo=tpe.suggest, max_evals=50, trials=trials)
 
