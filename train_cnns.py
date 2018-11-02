@@ -24,9 +24,9 @@ import json
 import math
 
 import loader
-from specgan import SpecGANDiscriminator
-from wavegan import WaveGANDiscriminator
 from train_specgan import t_to_f, _WINDOW_LEN, _FS
+from util import *
+from test_cnn import test_model as test_model_with_params
 
 import pprint
 
@@ -34,12 +34,12 @@ from tensorflow.python.platform import tf_logging as logging
 logging.set_verbosity(tf.logging.INFO)
 
 DRY_RUN = True  # Whether or not to run just one training iteration (as oposed to multiple epochs)
-MAX_EPOCHS = 10
-train_dataset_size = 21114
+MAX_EPOCHS = 2
+train_dataset_size = None
 mean_delta_accuracy_threshold = .01   # Average of last 3 delta accuracies has to be >= 1
 processing_specgan = True
 perform_feature_extraction = True
-perform_fine_tuning = False
+perform_fine_tuning = True
 record_hyperopt_feature_extraction = True
 perform_hyperopt = True
 skip_training_percentage = 0
@@ -48,101 +48,6 @@ global_train_data_percentage = None
 
 args = None  # TODO: make this variable visible in subprocess
 # /mnt/raid/ni/dnn/install_cuda-9.0/../build/cudnn-9.0-v7/lib64:/usr/local/cuda-9.0/lib64:/mnt/raid/ni/dnn/install_cuda-9.0/lib:/mnt/raid/ni/dnn/install_cuda-9.0/../build/cudnn-9.0-v7.1/lib64:/usr/local/cuda-9.0/lib64:/mnt/raid/ni/dnn/install_cuda-9.0/lib:/mnt/raid/ni/dnn/install_cuda-8.0/../build/cudnn-8.0/lib64:/usr/local/cuda-8.0/lib64:/mnt/raid/ni/dnn/install_cuda-8.0/lib
-
-def resettable_metric(metric, scope_name, **metric_args):
-    '''
-    Originally from https://github.com/tensorflow/tensorflow/issues/4814#issuecomment-314801758
-    '''
-    with tf.variable_scope(scope_name) as scope:
-        metric_op, update_op = metric(**metric_args)
-        v = tf.contrib.framework.get_variables(scope, collection=tf.GraphKeys.LOCAL_VARIABLES)
-        reset_op = tf.variables_initializer(v)
-    return metric_op, update_op, reset_op
-
-
-def define_search_space():
-    space = {
-        'batch_size': hp.choice('batch_size', [64, 128]),
-        'optimizer': hp.choice('optimizer', [
-            # {'SGD': {'learning_rate_base': hp.choice('learning_rate_base_SGD', [0.001, 0.003, 0.005])}},
-            # {'Adam': {'learning_rate_base': hp.choice('learning_rate_base_Adam', [0.00001, 0.001, 0.003, 0.005, 0.01, 0.05, 0.1])}}
-            {'Adam': {'learning_rate_base': hp.choice('learning_rate_base_Adam',
-                                                      [0.00001, 0.00003, 0.00005, 0.0001, 0.0003, 0.0005])}}
-        ]),
-
-        'learning_rate_mode': hp.choice('learning_rate_mode', ['constant', 'decaying']),
-
-        'layer_1_size': hp.choice('layer_1_size', [2 ** x for x in range(4, 8)]),
-
-        'layer_2': hp.choice('layer_2', [
-            False,
-            {
-                'layer_2_size': hp.choice('layer_2_size', [2 ** x for x in range(4, 8)])
-            }
-        ]),
-
-        'layers_transferred': hp.choice('layers_transferred', [1, 2, 3, 4])
-    }
-
-    return space
-
-
-def get_cnn_model(params, x, validation=False):
-    batch_size = params['batch_size']
-    layers_transferred = params['layers_transferred']
-    with tf.variable_scope('D', reuse=validation):
-        D_x_training = SpecGANDiscriminator(x) if processing_specgan else WaveGANDiscriminator(x)  # leave the other parameters default
-
-        last_conv_op_name = 'D_x_'+str('validation' if validation else 'training')+'/D/Maximum_' + str(layers_transferred)
-        last_conv_tensor = tf.get_default_graph().get_operation_by_name(last_conv_op_name).values()[0]
-        last_conv_tensor = tf.reshape(last_conv_tensor, [batch_size, -1])  # Flatten
-
-    with tf.variable_scope('decision_layers', reuse=validation):
-        cnn_decision_layer = tf.layers.dense(last_conv_tensor, 10)
-
-    return cnn_decision_layer
-
-
-def get_optimizer(params, D_loss):
-
-    optimizer = params['optimizer']
-    learning_rate_mode = params['learning_rate_mode']
-
-    # Define optmizer
-    d_trainer = None
-    d_decision_trainer = None
-    d_decision_vars = tf.trainable_variables(scope='decision_layers')
-    global_step = tf.train.get_or_create_global_step()
-    if "SGD" in optimizer:
-        learning_rate_base = optimizer['SGD']['learning_rate_base']
-        # Define learning rate
-        if learning_rate_mode == "decaying":
-            learning_rate = tf.train.exponential_decay(learning_rate_base, global_step, 100000, 0.96, staircase=False)
-        elif learning_rate_mode == "constant":
-            learning_rate = learning_rate_base
-        d_trainer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(D_loss,
-                                                                                            global_step=global_step)
-        d_decision_trainer = d_trainer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(D_loss,
-                                                                                            global_step=global_step,
-                                                                                            var_list=d_decision_vars)
-
-
-    elif "Adam" in optimizer:
-        learning_rate_base = optimizer['Adam']['learning_rate_base']
-        # Define learning rate
-        if learning_rate_mode == "decaying":
-            learning_rate = tf.train.exponential_decay(learning_rate_base, global_step, 100000, 0.96, staircase=False)
-        elif learning_rate_mode == "constant":
-            learning_rate = learning_rate_base
-        d_trainer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(D_loss,
-                                                                                 global_step=global_step)
-        d_decision_trainer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(D_loss,
-                                                                                 global_step=global_step,
-                                                                                 var_list=d_decision_vars)
-    else:
-        logging.error("Cannot find optimizer: %s", optimizer)
-
-    return d_trainer, d_decision_trainer
 
 
 def evaluate_model_process(params, train_data_percentage, seed, q):
@@ -154,42 +59,40 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
     batch_size = params['batch_size']
 
     # Define input training, validation and test data
+    # TODO: think of a deterministic way to do the data split, GAN + Classifier train + valid. Valid out of Train must be seed-able
     logging.info("Preparing data ... ")
     training_fps = glob.glob(os.path.join(args.data_dir, "train") + '*.tfrecord') + glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
-    # validation_fps = glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
+    # training_fps, validation_fps = loader.split_files_test_val(training_fps, train_size=0.9, seed=0)
     validation_fps = glob.glob(os.path.join(args.data_dir, "test") + '*.tfrecord')
 
     with tf.name_scope('loader'):
-        # Training is the only one that repeats
-        training_iterator = loader.get_batch(training_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False, initializable=True, seed=seed)
-        x_wav_training, labels_training = training_iterator.get_next()
-        x_training = t_to_f(x_wav_training, args.data_moments_mean, args.data_moments_std)
+        training_dataset = loader.get_batch(training_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False,
+                                            return_dataset=True)
+        validation_dataset = loader.get_batch(validation_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False,
+                                              return_dataset=True)
 
-        validation_iterator = loader.get_batch(validation_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False, initializable=True)
-        x_wav_validation, labels_validation = validation_iterator.get_next()
-        x_validation = t_to_f(x_wav_validation, args.data_moments_mean, args.data_moments_std)
+        train_dataset_size = find_data_size(training_fps, exclude_class=None)
+        logging.info("Full training datasize = " + str(train_dataset_size))
+
+        iterator = tf.data.Iterator.from_structure(training_dataset.output_types, training_dataset.output_shapes)
+        training_init_op = iterator.make_initializer(training_dataset)
+        validation_init_op = iterator.make_initializer(validation_dataset)
+        x_wav, labels = iterator.get_next()
+
+        x = t_to_f(x_wav, args.data_moments_mean, args.data_moments_std) if processing_specgan else x_wav
 
     # Get the discriminator and put extra layers
-    with tf.name_scope('D_x_training'):
-        if processing_specgan:
-            cnn_training = get_cnn_model(params, x_training, validation=False)
-        else:
-            cnn_training = get_cnn_model(params, x_wav_training, validation=False)
-
-    with tf.name_scope('D_x_validation'):
-        if processing_specgan:
-            cnn_validation = get_cnn_model(params, x_validation, validation=True)
-        else:
-            cnn_validation = get_cnn_model(params, x_wav_validation, validation=True)
+    with tf.name_scope('D_x'):
+        cnn_output_logits = get_cnn_model(params, x, processing_specgan=processing_specgan)
 
     # Define loss and optimizers
-    cnn_loss = tf.nn.softmax_cross_entropy_with_logits(logits=cnn_training, labels=tf.one_hot(labels_training, 10))
+    cnn_loss = tf.nn.softmax_cross_entropy_with_logits(logits=cnn_output_logits, labels=tf.one_hot(labels, 10))
     cnn_trainer, d_decision_trainer = get_optimizer(params, cnn_loss)
 
-    # Define accuracy for validation
+    # Define accuracy performance measure
     acc_op, acc_update_op, acc_reset_op = resettable_metric(tf.metrics.accuracy, 'foo',
-                                                            labels=labels_validation,
-                                                            predictions=tf.argmax(cnn_validation, axis=1))
+                                                            labels=labels,
+                                                            predictions=tf.argmax(cnn_output_logits, axis=1))
 
     # Restore the variables of the discriminator if necessary
     saver = tf.train.Saver(var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='D'))
@@ -200,13 +103,13 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
         train_data_percentage) + "_" + str(seed)
 
     def initialize_iterator(sess, skip=False):
-        sess.run(training_iterator.initializer)
+        sess.run(training_init_op)
 
         if skip:
             batches_to_skip = math.ceil(1.0 * train_dataset_size * skip_training_percentage / 100.0 / batch_size)
             logging.info("Skipping " + str(batches_to_skip) + " batches.")
             for _ in range(batches_to_skip):
-                sess.run(x_wav_training)  # equivalent to sess.run([x_wav_training, labels_training])
+                sess.run(x)  # equivalent to doing nothing with these training samples
 
     logging.info("Creating session ... ")
     with tf.train.MonitoredTrainingSession(
@@ -255,7 +158,7 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
 
                 logging.info("Stopped training at epoch step: " + str(current_step))
                 # Validation
-                sess.run([acc_reset_op, validation_iterator.initializer])
+                sess.run([acc_reset_op, validation_init_op])
                 try:
                     while True:
                         sess.run(acc_update_op)
@@ -301,7 +204,7 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
 
                 logging.info("Stopped training at epoch step: " + str(current_step))
                 # Validation
-                sess.run([acc_reset_op, validation_iterator.initializer])
+                sess.run([acc_reset_op, validation_init_op])
                 try:
                     while True:
                         sess.run(acc_update_op)
@@ -528,7 +431,8 @@ if __name__ == '__main__':
     # latest_ckpt_fp = tf.train.latest_checkpoint(args.data_dir)
 
     if perform_hyperopt:
-        for global_train_data_percentage in [10, 40, 70, 100]:
+        # for global_train_data_percentage in [10, 40, 70, 100]:
+        for global_train_data_percentage in [10]:
             checkpoint_iter = 30
             setattr(args, 'checkpoint_iter', checkpoint_iter)
             logging.info("checkpoint_iter = " + str(checkpoint_iter))
@@ -536,7 +440,22 @@ if __name__ == '__main__':
             logging.info("global_train_data_percentage = " + str(global_train_data_percentage))
             trials = Trials()
             best = fmin(fn=evaluate_model_hyperopt, space=define_search_space(),
-                        algo=tpe.suggest, max_evals=50, trials=trials)
+                        algo=tpe.suggest, max_evals=2, trials=trials)
+
+            logging.info("Best = ")
+            pprint.pprint(best)
+
+
+            # accuracy = test_model_with_params(
+            #     params=best,
+            #     training_fps=glob.glob(os.path.join(args.data_dir, "train") + '*.tfrecord') + \
+            #                  glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord'),
+            #     test_fps=glob.glob(os.path.join(args.data_dir, "test") + '*.tfrecord'),
+            #     args=args,
+            #     processing_specgan=processing_specgan,
+            #     MAX_EPOCHS=1
+            # )
+            # logging.info('Best accuracy = %s' % str(best['result']['loss']))
 
         # with open("hyperopt.txt", "w") as fout:
         #     fout.write("Best = \n")

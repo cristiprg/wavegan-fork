@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 
 
 def f0(): return tf.constant('0', dtype=tf.string)
@@ -69,7 +70,9 @@ def get_batch(
     labels=False,
     buffer_size=8192,
     initializable=False,
-    seed=0):
+    seed=0,
+    exclude_class=None,
+    return_dataset=False):
   def _mapper(example_proto):
     features = {'samples': tf.FixedLenSequenceFeature([1], tf.float32, allow_missing=True)}
     if labels:
@@ -104,15 +107,28 @@ def get_batch(
     else:
       return wav
 
+  if exclude_class is not None and labels is False:
+    raise Exception("If you want to exclude classes, you must set labels to True. This also means you have to take care"
+                    "when you use them!")
+
   dataset = tf.data.TFRecordDataset(fps)
   dataset = dataset.map(_mapper)
-  if repeat:
-    dataset = dataset.shuffle(buffer_size=buffer_size, seed=seed)
+  # if repeat:
+  dataset = dataset.shuffle(buffer_size=buffer_size, seed=seed)
+
+  if exclude_class is not None:
+    print("Excluding class " + str(exclude_class) + "!")
+
+    dataset = dataset.filter(lambda x, label: tf.reshape(tf.not_equal(label, exclude_class), []))
+
   dataset = dataset.apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
   if repeat:
     dataset = dataset.repeat()
 
   # dataset.prefetch(1)
+  if return_dataset is True:
+    return dataset
+
   if not initializable:
     iterator = dataset.make_one_shot_iterator()
   else:
@@ -120,3 +136,23 @@ def get_batch(
 
 
   return iterator.get_next()
+
+
+def split_files_test_val(fps, train_size, seed):
+  #  Inspired from https://github.com/scikit-learn/scikit-learn/blob/a7e17117bb15eb3f51ebccc1bd53e42fcb4e6cd8/sklearn/model_selection/_split.py#L1301
+
+  if train_size < 0 or train_size > 1:
+    raise ValueError("train_size not in [0, 1]")
+
+  if len(fps) <= 0:
+    raise ValueError("Invalid value for len(fps): " + str(len(fps)))
+
+  permutation = np.random.RandomState(seed=seed).permutation(len(fps))
+  the_index = int((len(fps) * train_size))
+  ind_train = permutation[:the_index]
+  ind_val = permutation[the_index:]
+
+  fps_train = [fps[i] for i in ind_train]
+  fps_val = [fps[i] for i in ind_val]
+
+  return fps_train, fps_val
