@@ -459,6 +459,10 @@ if __name__ == '__main__':
 
     # latest_ckpt_fp = tf.train.latest_checkpoint(args.data_dir)
 
+    training_fps = glob.glob(os.path.join(args.data_dir,
+                                          "train") + '*.tfrecord')  # + glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
+    training_fps = sorted(training_fps)
+
     if perform_hyperopt:
         for global_train_data_percentage in [10, 40, 100]:
             for checkpoint_iter in [1, 6, 12, 18]:
@@ -467,8 +471,7 @@ if __name__ == '__main__':
                 # logging.info("checkpoint_iter = " + str(checkpoint_iter))
 
                 # logging.info("global_train_data_percentage = " + str(global_train_data_percentage))
-                training_fps = glob.glob(os.path.join(args.data_dir,
-                                       "train") + '*.tfrecord')  # + glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
+
                 length = len(training_fps)
                 training_fps = training_fps[:(int(global_train_data_percentage / 100.0 * length))]
                 setattr(args, 'training_fps', training_fps)
