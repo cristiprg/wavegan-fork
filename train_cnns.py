@@ -34,36 +34,35 @@ from tensorflow.python.platform import tf_logging as logging
 logging.set_verbosity(tf.logging.INFO)
 
 DRY_RUN = True  # Whether or not to run just one training iteration (as oposed to multiple epochs)
-MAX_EPOCHS = 2
+MAX_EPOCHS = 10
 train_dataset_size = None
 mean_delta_accuracy_threshold = .01   # Average of last 3 delta accuracies has to be >= 1
 processing_specgan = True
 perform_feature_extraction = True
-perform_fine_tuning = True
+perform_fine_tuning = False
 record_hyperopt_feature_extraction = True
 perform_hyperopt = True
-skip_training_percentage = 0
+# skip_training_percentage = 0
 global_train_data_percentage = None
 # Don't forget to set up the proper interpreter
 
 args = None  # TODO: make this variable visible in subprocess
+evaluated_configs = {}
 # /mnt/raid/ni/dnn/install_cuda-9.0/../build/cudnn-9.0-v7/lib64:/usr/local/cuda-9.0/lib64:/mnt/raid/ni/dnn/install_cuda-9.0/lib:/mnt/raid/ni/dnn/install_cuda-9.0/../build/cudnn-9.0-v7.1/lib64:/usr/local/cuda-9.0/lib64:/mnt/raid/ni/dnn/install_cuda-9.0/lib:/mnt/raid/ni/dnn/install_cuda-8.0/../build/cudnn-8.0/lib64:/usr/local/cuda-8.0/lib64:/mnt/raid/ni/dnn/install_cuda-8.0/lib
 
 
-def evaluate_model_process(params, train_data_percentage, seed, q):
+def evaluate_model_process(params, seed, q):
 
     global args
-
-    logging.info("Running configuration %s, data_size %s, seed %s", params, str(train_data_percentage), str(seed))
 
     batch_size = params['batch_size']
 
     # Define input training, validation and test data
     # TODO: think of a deterministic way to do the data split, GAN + Classifier train + valid. Valid out of Train must be seed-able
     logging.info("Preparing data ... ")
-    training_fps = glob.glob(os.path.join(args.data_dir, "train") + '*.tfrecord') + glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
-    # training_fps, validation_fps = loader.split_files_test_val(training_fps, train_size=0.9, seed=0)
-    validation_fps = glob.glob(os.path.join(args.data_dir, "test") + '*.tfrecord')
+    # training_fps = glob.glob(os.path.join(args.data_dir, "train") + '*.tfrecord')# + glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
+    training_fps = args.training_fps
+    training_fps, validation_fps = loader.split_files_test_val(training_fps, train_size=0.9, seed=seed)
 
     with tf.name_scope('loader'):
         training_dataset = loader.get_batch(training_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False,
@@ -72,7 +71,10 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
                                               return_dataset=True)
 
         train_dataset_size = find_data_size(training_fps, exclude_class=None)
-        logging.info("Full training datasize = " + str(train_dataset_size))
+        logging.info("Training datasize = " + str(train_dataset_size))
+
+        valid_dataset_size = find_data_size(validation_fps, exclude_class=None)
+        logging.info("Validation datasize = " + str(valid_dataset_size))
 
         iterator = tf.data.Iterator.from_structure(training_dataset.output_types, training_dataset.output_shapes)
         training_init_op = iterator.make_initializer(training_dataset)
@@ -100,16 +102,16 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
     ckpt_fp = tf.train.get_checkpoint_state(checkpoint_dir=args.train_dir).all_model_checkpoint_paths[args.checkpoint_iter]
 
     tensorboard_session_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "_" + str(
-        train_data_percentage) + "_" + str(seed)
+        global_train_data_percentage) + "_" + str(seed)
 
     def initialize_iterator(sess, skip=False):
         sess.run(training_init_op)
 
-        if skip:
-            batches_to_skip = math.ceil(1.0 * train_dataset_size * skip_training_percentage / 100.0 / batch_size)
-            logging.info("Skipping " + str(batches_to_skip) + " batches.")
-            for _ in range(batches_to_skip):
-                sess.run(x)  # equivalent to doing nothing with these training samples
+        # if skip:
+        #     batches_to_skip = math.ceil(1.0 * train_dataset_size * skip_training_percentage / 100.0 / batch_size)
+        #     logging.info("Skipping " + str(batches_to_skip) + " batches.")
+        #     for _ in range(batches_to_skip):
+        #         sess.run(x)  # equivalent to doing nothing with these training samples
 
     logging.info("Creating session ... ")
     with tf.train.MonitoredTrainingSession(
@@ -129,9 +131,10 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
         logdir = "./tensorboard_wavegan_cnn/" + str(tensorboard_session_name) + "/"
         writer = tf.summary.FileWriter(logdir, sess.graph)
 
-        nr_training_batches = math.ceil(train_dataset_size / batch_size *
-                                        train_data_percentage / 100.0 *
-                                        (100 - skip_training_percentage) / 100.0)
+        # nr_training_batches = math.ceil(train_dataset_size / batch_size *
+        #                                 train_data_percentage / 100.0 *
+        #                                 (100 - skip_training_percentage) / 100.0)
+        nr_training_batches = train_dataset_size
 
         logging.info("Training batches: " + str(nr_training_batches))
 
@@ -179,7 +182,7 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
                 if current_epoch >= MAX_EPOCHS:
                     logging.info("Stopping after " + str(MAX_EPOCHS) + " epochs!")
 
-            logging.info("Result feature extraction: %s %s %s %s", params, train_data_percentage, seed, str(accuracies_feature_exctraction[-1]))
+            logging.info("Result feature extraction: %s %s %s %s", params, global_train_data_percentage, seed, str(accuracies_feature_exctraction[-1]))
 
         # Step 2: Continue training everything
         if perform_fine_tuning:
@@ -225,7 +228,7 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
                 if current_epoch >= MAX_EPOCHS:
                     logging.info("Stopping after " + str(MAX_EPOCHS) + " epochs!")
 
-            logging.info("Result fine tuning: %s %s %s %s", params, train_data_percentage, seed,
+            logging.info("Result fine tuning: %s %s %s %s", params, global_train_data_percentage, seed,
                          str(accuracies_fine_tuning[-1]))
 
         recorded_accuracy = accuracies_feature_exctraction[-1] if record_hyperopt_feature_extraction is True else accuracies_fine_tuning[-1]
@@ -241,8 +244,21 @@ def evaluate_model_process(params, train_data_percentage, seed, q):
 
 
 def evaluate_model_hyperopt(params):
+    global evaluated_configs
+
+    key = hash(str(params))
+    logging.info("key="+str(key))
+    if key in evaluated_configs:
+        evaluated_configs[key] += 1
+    else:
+        evaluated_configs[key] = 0
+    seed = evaluated_configs[key]
+
+    logging.info("Running configuration %s, data_size %s, seed %s", params, str(global_train_data_percentage),
+                 str(seed))
+
     q = multiprocessing.Queue()
-    p = multiprocessing.Process(target=evaluate_model_process, args=(params, global_train_data_percentage, 0, q))
+    p = multiprocessing.Process(target=evaluate_model_process, args=(params, seed, q))
     p.start()
     res = q.get()
     p.join()
@@ -260,6 +276,15 @@ def evaluate_model(params):
             p.join()
 
     return res
+
+
+def test_model_wrapper(q, params, training_fps, test_fps, args, processing_specgan=processing_specgan, MAX_EPOCHS=MAX_EPOCHS, predictions_pickle=None):
+    """
+    This must already run in another process
+    TODO: fix this thing with the parameters
+    """
+    best_model_accuracy = test_model_with_params(params, training_fps, test_fps, args, processing_specgan=processing_specgan, MAX_EPOCHS=MAX_EPOCHS, predictions_pickle=None)
+    q.put(best_model_accuracy)
 
 #
 # def evaluate_model_backup(params):
@@ -399,13 +424,17 @@ if __name__ == '__main__':
     parser.add_argument('--data_moments_fp', type=str,
                            help='Dataset moments')
 
+    parser.add_argument('--predictions_pickles_directory', type=str, help='Where to store the predictions on the test'
+                                                                          'set for the best models selected by hyperopt')
+
     if PYTHON_VERSION == 2:
         parser.set_defaults(
             train_dir="/mnt/antares_raid/home/cristiprg/tmp/pycharm_project_wavegan/" +
                       ("train_specgan_90" if processing_specgan else "train_wavegan_90"),
             data_dir="/mnt/raid/data/ni/dnn/cristiprg/sc09/",
             # data_dir="/mnt/scratch/cristiprg/sc09/",
-            data_moments_fp="/mnt/antares_raid/home/cristiprg/tmp/pycharm_project_wavegan/train_specgan/moments.pkl"
+            data_moments_fp="/mnt/antares_raid/home/cristiprg/tmp/pycharm_project_wavegan/train_specgan/moments.pkl",
+            predictions_pickles_directory="./hyperopt_pickles"
         )
     else:
         parser.set_defaults(
@@ -431,31 +460,54 @@ if __name__ == '__main__':
     # latest_ckpt_fp = tf.train.latest_checkpoint(args.data_dir)
 
     if perform_hyperopt:
-        # for global_train_data_percentage in [10, 40, 70, 100]:
-        for global_train_data_percentage in [10]:
-            checkpoint_iter = 30
-            setattr(args, 'checkpoint_iter', checkpoint_iter)
-            logging.info("checkpoint_iter = " + str(checkpoint_iter))
+        for global_train_data_percentage in [10, 40, 100]:
+            for checkpoint_iter in [1, 6, 12, 18]:
 
-            logging.info("global_train_data_percentage = " + str(global_train_data_percentage))
-            trials = Trials()
-            best = fmin(fn=evaluate_model_hyperopt, space=define_search_space(),
-                        algo=tpe.suggest, max_evals=2, trials=trials)
+                setattr(args, 'checkpoint_iter', checkpoint_iter)
+                # logging.info("checkpoint_iter = " + str(checkpoint_iter))
 
-            logging.info("Best = ")
-            pprint.pprint(best)
+                # logging.info("global_train_data_percentage = " + str(global_train_data_percentage))
+                training_fps = glob.glob(os.path.join(args.data_dir,
+                                       "train") + '*.tfrecord')  # + glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
+                length = len(training_fps)
+                training_fps = training_fps[:(int(global_train_data_percentage / 100.0 * length))]
+                setattr(args, 'training_fps', training_fps)
 
+                trials = Trials()
+                best = fmin(fn=evaluate_model_hyperopt, space=define_search_space(),
+                            algo=tpe.suggest, max_evals=50, trials=trials)
 
-            # accuracy = test_model_with_params(
-            #     params=best,
-            #     training_fps=glob.glob(os.path.join(args.data_dir, "train") + '*.tfrecord') + \
-            #                  glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord'),
-            #     test_fps=glob.glob(os.path.join(args.data_dir, "test") + '*.tfrecord'),
-            #     args=args,
-            #     processing_specgan=processing_specgan,
-            #     MAX_EPOCHS=1
-            # )
-            # logging.info('Best accuracy = %s' % str(best['result']['loss']))
+                setattr(args, 'load_model_dir', None)
+                setattr(args, 'checkpoints_dir', None)
+                setattr(args, 'tensorboard_dir', None)
+
+                pickle_name = str(global_train_data_percentage) + "_" + str(checkpoint_iter) + ".pkl"
+                params = transform_hyperopt_result_to_dict_again(best)
+                q = multiprocessing.Queue()
+
+                p = multiprocessing.Process(target=test_model_wrapper, args=(q,
+                    params,
+                    training_fps,
+                    glob.glob(os.path.join(args.data_dir, "test") + '*.tfrecord'),
+                    args,
+                    processing_specgan,
+                    1,
+                    os.path.join(args.predictions_pickles_directory, pickle_name)))
+
+                # Same-process version equivalent
+                # test_model_wrapper(q,
+                #     params=params,
+                #     training_fps=training_fps,
+                #     test_fps=glob.glob(os.path.join(args.data_dir, "test") + '*.tfrecord'),
+                #     args=args,
+                #     processing_specgan=processing_specgan,
+                #     MAX_EPOCHS=1,
+                #     predictions_pickle=os.path.join(args.predictions_pickles_directory, pickle_name)
+                # )
+                p.start()
+                acc = q.get()
+                p.join()
+                logging.info("Test accuracy: %s %s %s %s", str(params), global_train_data_percentage, checkpoint_iter, acc)
 
         # with open("hyperopt.txt", "w") as fout:
         #     fout.write("Best = \n")

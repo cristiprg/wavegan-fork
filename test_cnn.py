@@ -6,55 +6,31 @@ import loader
 from specgan import SpecGANDiscriminator
 from wavegan import WaveGANDiscriminator
 from train_specgan import t_to_f, _WINDOW_LEN, _FS
-from train_cnns import get_optimizer
+
+from util import *
 
 from tensorflow.python.platform import tf_logging as logging
 import numpy as np
 logging.set_verbosity(tf.logging.INFO)
 
 MAX_EPOCHS = 3
-
-processing_specgan = True
-
-def resettable_metric(metric, scope_name, **metric_args):
-    '''
-    Originally from https://github.com/tensorflow/tensorflow/issues/4814#issuecomment-314801758
-    '''
-    with tf.variable_scope(scope_name) as scope:
-        metric_op, update_op = metric(**metric_args)
-        v = tf.contrib.framework.get_variables(scope, collection=tf.GraphKeys.LOCAL_VARIABLES)
-        reset_op = tf.variables_initializer(v)
-    return metric_op, update_op, reset_op
+processing_specgan=True
 
 
-
-def get_cnn_model(params, x):
-    batch_size = params['batch_size']
-    layers_transferred = params['layers_transferred']
-    with tf.variable_scope('D'):
-        D_x_training = SpecGANDiscriminator(x) if processing_specgan else WaveGANDiscriminator(x)  # leave the other parameters default
-
-        last_conv_op_name = 'D_x/D/Maximum_' + str(layers_transferred)
-        last_conv_tensor = tf.get_default_graph().get_operation_by_name(last_conv_op_name).values()[0]
-        last_conv_tensor = tf.reshape(last_conv_tensor, [batch_size, -1])  # Flatten
-
-    with tf.variable_scope('decision_layers'):
-        cnn_decision_layer = tf.layers.dense(last_conv_tensor, 10)
-
-    return cnn_decision_layer
-
-
-def test_model(params):
+def test_model(params, training_fps, test_fps, args, processing_specgan=processing_specgan, MAX_EPOCHS=MAX_EPOCHS, predictions_pickle=None):
     batch_size = params['batch_size']
 
-    training_fps = glob.glob(os.path.join(args.data_dir, "train") + '*.tfrecord')
-    validation_fps = glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
-    test_fps = glob.glob(os.path.join(args.data_dir, "test") + '*.tfrecord')
-    training_fps += validation_fps
+    logging.info("Testing configuration %s", params)
 
     with tf.name_scope('loader'):
         training_dataset = loader.get_batch(training_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False, return_dataset=True)
         test_dataset = loader.get_batch(test_fps, batch_size, _WINDOW_LEN, labels=True, repeat=False, return_dataset=True)
+
+        train_dataset_size = find_data_size(training_fps, exclude_class=None)
+        logging.info("Training datasize = " + str(train_dataset_size))
+
+        test_dataset_size = find_data_size(test_fps, exclude_class=None)
+        logging.info("Test datasize = " + str(test_dataset_size))
 
         iterator = tf.data.Iterator.from_structure(training_dataset.output_types, training_dataset.output_shapes)
         training_init_op = iterator.make_initializer(training_dataset)
@@ -64,7 +40,7 @@ def test_model(params):
         x = t_to_f(x_wav, args.data_moments_mean, args.data_moments_std) if processing_specgan else x_wav
 
     with tf.name_scope('D_x'):
-        cnn_output_logits = get_cnn_model(params, x)
+        cnn_output_logits = get_cnn_model(params, x, processing_specgan=processing_specgan)
 
     # Define loss and optimizers
     cnn_loss = tf.nn.softmax_cross_entropy_with_logits(logits=cnn_output_logits, labels=tf.one_hot(labels, 10))
@@ -126,22 +102,23 @@ def test_model(params):
 
         sess.run(test_init_op)
 
-        logging.info("Testing 2")
-        numpy_predictions, numpy_labels = np.array([]), np.array([])
-        try:
-            while True:
-                tmp_pred, tmp_labels = sess.run([predictions, labels])
+        if predictions_pickle is not None:
+            logging.info("Testing 2")
+            numpy_predictions, numpy_labels = np.array([]), np.array([])
+            try:
+                while True:
+                    tmp_pred, tmp_labels = sess.run([predictions, labels])
 
-                numpy_predictions = np.append(numpy_predictions, tmp_pred)
-                numpy_labels = np.append(numpy_labels, tmp_labels)
-        except tf.errors.OutOfRangeError:
-            # End of dataset
-            # current_accuracy = sess.run(acc_op)
-            # logging.info("accuracy = " + str(current_accuracy))
+                    numpy_predictions = np.append(numpy_predictions, tmp_pred)
+                    numpy_labels = np.append(numpy_labels, tmp_labels)
+            except tf.errors.OutOfRangeError:
 
-            print(sess.run(tf.confusion_matrix(numpy_labels, numpy_predictions)))
-            with open(os.path.join(".", "predictions.pkl"), 'wb') as f:
-                pickle.dump((numpy_labels, numpy_predictions), f)
+                logging.info("Pickling predictions to " + predictions_pickle)
+
+                with open(predictions_pickle, 'wb') as f:
+                    pickle.dump((numpy_labels, numpy_predictions), f)
+
+    return current_accuracy
 
 
 

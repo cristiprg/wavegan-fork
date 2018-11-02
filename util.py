@@ -39,31 +39,61 @@ def find_data_size(fps, exclude_class):
   return train_dataset_size
 
 
+batch_size_choice = [64, 128]
+layers_transferred_choice = [1, 2, 3, 4]
+learning_rate_base_Adam_choice = [0.00001, 0.00003, 0.00005, 0.0001, 0.0003, 0.0005]
+learning_rate_mode_choice = ['constant', 'decaying']
+layer_1_size_choice = [2 ** x for x in range(4, 8)]
+layer_2_size_choice = [2 ** x for x in range(4, 8)]
+
 def define_search_space():
     space = {
-        'batch_size': hp.choice('batch_size', [64, 128]),
+        'batch_size': hp.choice('batch_size', batch_size_choice),
         'optimizer': hp.choice('optimizer', [
             # {'SGD': {'learning_rate_base': hp.choice('learning_rate_base_SGD', [0.001, 0.003, 0.005])}},
             # {'Adam': {'learning_rate_base': hp.choice('learning_rate_base_Adam', [0.00001, 0.001, 0.003, 0.005, 0.01, 0.05, 0.1])}}
             {'Adam': {'learning_rate_base': hp.choice('learning_rate_base_Adam',
-                                                      [0.00001, 0.00003, 0.00005, 0.0001, 0.0003, 0.0005])}}
+                                                      learning_rate_base_Adam_choice)}}
         ]),
 
-        'learning_rate_mode': hp.choice('learning_rate_mode', ['constant', 'decaying']),
+        'learning_rate_mode': hp.choice('learning_rate_mode', learning_rate_mode_choice),
 
-        'layer_1_size': hp.choice('layer_1_size', [2 ** x for x in range(4, 8)]),
+        'layer_1_size': hp.choice('layer_1_size', layer_1_size_choice),
 
         'layer_2': hp.choice('layer_2', [
             False,
             {
-                'layer_2_size': hp.choice('layer_2_size', [2 ** x for x in range(4, 8)])
+                'layer_2_size': hp.choice('layer_2_size', layer_2_size_choice)
             }
         ]),
 
-        'layers_transferred': hp.choice('layers_transferred', [1, 2, 3, 4])
+        'layers_transferred': hp.choice('layers_transferred', layers_transferred_choice)
     }
 
     return space
+
+def transform_hyperopt_result_to_dict_again(hyperopt_param):
+
+    params = {}
+    params['batch_size'] = batch_size_choice[hyperopt_param['batch_size']]
+    params['layers_transferred'] = layers_transferred_choice[hyperopt_param['layers_transferred']]
+    params['optimizer'] = {}
+    params['optimizer']['Adam'] ={}
+    params['optimizer']['Adam']['learning_rate_base'] = learning_rate_base_Adam_choice[hyperopt_param['learning_rate_base_Adam']]
+    params['learning_rate_mode'] = learning_rate_mode_choice[hyperopt_param['learning_rate_mode']]
+    params['layer_1_size'] = layer_1_size_choice[hyperopt_param['layer_1_size']]
+    # params['layer_2'] = False if hyperopt_param['layer_2'] == 0 else True
+    #
+    # if params['layer_2']:
+    #     params['layer_2']['layer_2_size'] = layer_2_size_choice[hyperopt_param['layer_2_size']]
+
+    if hyperopt_param['layer_2'] == 1:  # which means True - check with the choice
+        params['layer_2'] = {}
+        params['layer_2']['layer_2_size'] = layer_2_size_choice[hyperopt_param['layer_2_size']]
+    else:
+        params['layer_2'] = False
+
+    return params
 
 
 def get_cnn_model(params, x, processing_specgan=True):
