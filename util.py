@@ -73,7 +73,7 @@ def find_data_size(fps, exclude_class):
 
 
 batch_size_choice = [64, 128]
-layers_transferred_choice = [1, 2, 3, 4]
+layers_transferred_choice = [0, 1, 2, 3, 4]
 learning_rate_base_Adam_choice = [0.00001, 0.00003, 0.00005, 0.0001, 0.0003, 0.0005]
 learning_rate_mode_choice = ['constant', 'decaying']
 
@@ -151,7 +151,7 @@ def get_cnn_model(params, x, processing_specgan=True):
             output = last_conv_tensor
         else:
             with tf.variable_scope('decision_layer_1'):
-                output = tf.layers.dense(last_conv_tensor, layer_2_size)
+                output = tf.layers.dense(last_conv_tensor, layer_1_size)
 
             if layer_2_size != 0:
                 with tf.variable_scope('decision_layer_2'):
