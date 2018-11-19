@@ -142,7 +142,7 @@ def get_cnn_model(params, x, processing_specgan=True):
     with tf.variable_scope('D'):
         D_x_training = SpecGANDiscriminator(x) if processing_specgan else WaveGANDiscriminator(x)  # leave the other parameters default
 
-        last_conv_op_name = 'D_x/D/Maximum_' + str(layers_transferred)
+        last_conv_op_name = 'D_x/D/Maximum' + ("_" + str(layers_transferred) if layers_transferred != 0 else "")
         last_conv_tensor = tf.get_default_graph().get_operation_by_name(last_conv_op_name).values()[0]
         last_conv_tensor = tf.reshape(last_conv_tensor, [batch_size, -1], name="reshape_of_last_transferred_layer")  # Flatten
 
