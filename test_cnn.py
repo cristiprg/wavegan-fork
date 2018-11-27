@@ -62,6 +62,40 @@ def test_model(params, training_fps, test_fps, args, processing_specgan=processi
     # saver = tf.train.Saver()
     global_step_op = tf.train.get_or_create_global_step()
     latest_ckpt_fp = tf.train.latest_checkpoint(args.checkpoints_dir) if args.checkpoints_dir is not None else None
+
+    def get_accuracy():
+        sess.run([acc_reset_op, test_init_op])
+        try:
+            while True:
+                sess.run(acc_update_op)
+        except tf.errors.OutOfRangeError:
+            current_accuracy = sess.run(acc_op)
+        return current_accuracy
+
+    def get_mean_delta_accuracy(accuracy):
+        accuracies_feature_extraction.append(accuracy)
+        # Early stopping?
+        if len(accuracies_feature_extraction) >= 4:
+            mean_delta_accuracy = (accuracies_feature_extraction[-1] - accuracies_feature_extraction[-4]) * 1.0 / 3
+            return mean_delta_accuracy
+        return 99999
+
+    def run_trainer(trainer, message_prefix):
+        for current_epoch in range(MAX_EPOCHS):
+            sess.run(training_init_op)
+            try:
+                while True:
+                    sess.run(trainer)
+            except tf.errors.OutOfRangeError:
+                accuracy = get_accuracy()
+                logging.info("%s epoch %d accuracy = %f" % (message_prefix, current_epoch, accuracy))
+                mean_delta_accuracy = get_mean_delta_accuracy(accuracy)
+
+                if mean_delta_accuracy < mean_delta_accuracy_threshold:
+                    logging.info("Early stopping, mean_delta_accuracy = " + str(mean_delta_accuracy))
+                    break
+
+
     logging.info("Creating session ... ")
     with tf.Session() as sess:
 
@@ -75,29 +109,21 @@ def test_model(params, training_fps, test_fps, args, processing_specgan=processi
         elif latest_model_ckpt_fp is not None:
             load_model_saver.restore(sess, latest_model_ckpt_fp)
 
+        # Feature extraction
+        accuracies_feature_extraction = []
+        run_trainer(d_decision_trainer, "Feature extraction")
 
-        for current_epoch in range(MAX_EPOCHS):
-            sess.run(training_init_op)
-            logging.info("Running epoch " + str(current_epoch))
-            try:
-                while True:
-                    sess.run(cnn_trainer)
-            except tf.errors.OutOfRangeError:
-                pass
+        # Fine tuning
+        accuracies_feature_extraction = []
+        run_trainer(cnn_trainer, "Fine tuning")
 
         # Save model
         if args.checkpoints_dir is not None:
             save_path = saver.save(sess, os.path.join(args.checkpoints_dir, "model.ckpt"), global_step=sess.run(global_step_op))
             print("Model saved in path: %s" % save_path)
 
-        logging.info("Testing 1")
-        sess.run([acc_reset_op, test_init_op])
-        try:
-            while True:
-                sess.run(acc_update_op)
-        except tf.errors.OutOfRangeError:
-            current_accuracy = sess.run(acc_op)
-            logging.info("Current accuracy = " + str(current_accuracy))
+        fine_tuning_accuracy = get_accuracy()
+        logging.info("Fine tuning accuracy = " + str(fine_tuning_accuracy))
 
 
         sess.run(test_init_op)
@@ -118,7 +144,7 @@ def test_model(params, training_fps, test_fps, args, processing_specgan=processi
                 with open(predictions_pickle, 'wb') as f:
                     pickle.dump((numpy_labels, numpy_predictions), f)
 
-    return current_accuracy
+    return fine_tuning_accuracy
 
 
 
@@ -132,12 +158,15 @@ if __name__ == '__main__':
     parser.add_argument('--data_moments_fp', type=str, help='Dataset moments')
     parser.add_argument('--load_model_dir', type=str, help='Directory from where to load the model')
     parser.add_argument('--checkpoints_dir', type=str, help='Directory where to save the checkpoints')
+    parser.add_argument('--train_data_percentage', type=int,
+                           help='Take the first train_data_percentage % of the data')
 
     parser.set_defaults(
         data_dir="/mnt/raid/data/ni/dnn/cristiprg/sc09/",
         tensorboard_dir=None,
         load_model_dir=None,
         checkpoints_dir=None,
+        train_data_percentage=100,
         # data_dir="/mnt/scratch/cristiprg/sc09/",
         data_moments_fp="/mnt/antares_raid/home/cristiprg/tmp/pycharm_project_wavegan/train_specgan/moments.pkl")
 
@@ -177,4 +206,17 @@ if __name__ == '__main__':
 
 
     # Test:
-    test_model(s)
+    training_fps = glob.glob(os.path.join(args.data_dir,
+                                 "train") + '*.tfrecord') \
+                   + glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')
+    training_fps = sorted(training_fps)
+    length = len(training_fps)
+    # training_fps = training_fps[:(int(args.train_data_percentage / 100.0 * length))]  # keep the beginning
+    training_fps = training_fps[(int((100 - args.train_data_percentage) / 100.0 * length)):]  # keep the ending
+    test_fps = glob.glob(os.path.join(args.data_dir, "test") + '*.tfrecord')
+
+    args.load_model_dir = args.load_model_dir[:-1] if args.load_model_dir[-1] == '/' else args.load_model_dir
+    pickle_name = args.load_model_dir + "_performance.pkl"
+
+    test_model(s, training_fps=training_fps, test_fps=test_fps, args=args, processing_specgan=processing_specgan,
+               MAX_EPOCHS=MAX_EPOCHS, predictions_pickle=os.path.join("./hyperopt_pickles", pickle_name))
