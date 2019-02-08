@@ -60,7 +60,7 @@ cat <LOG_FILE> | grep Result > results.txt
 ```
 Here, I used the word ["Result"](https://github.com/cristiprg/wavegan-fork/blob/master/test_cnn.py#L282) because it discriminates between the final results and rest of system logs. 
 
-5. If you would like to use another dataset, please follow the Donahue's instructions below to create build the datasets in the .tfrecord format. It is a good practice to create one set of multiple shards for _train_, one for _valid_ and one for _test_. Check the `--name` parameter.
+5. If you would like to use another dataset, please follow the Donahue's instructions below to create build the datasets in the .tfrecord format. It is a good practice to create one set of multiple shards for _train_, one for _valid_ and one for _test_. Check the `--name` parameter. Also, make sure to set the [data-constants](https://github.com/cristiprg/wavegan-fork/blob/master/util.py#L12-L19) appropriately.
 
 For experimenting with WaveGAN, the procedures are the same, expect the moments file is not necessary anymore and GAN_TYPE is now `wavegan` instead of `specgan`.
 
