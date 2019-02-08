@@ -62,6 +62,8 @@ Here, I used the word ["Result"](https://github.com/cristiprg/wavegan-fork/blob/
 
 5. If you would like to use another dataset, please follow the Donahue's instructions below to create build the datasets in the .tfrecord format. It is a good practice to create one set of multiple shards for _train_, one for _valid_ and one for _test_. Check the `--name` parameter.
 
+For experimenting with WaveGAN, the procedures are the same, expect the moments file is not necessary anymore and GAN_TYPE is now `wavegan` instead of `specgan`.
+
 Below this row is the original content of Donahue's wavegan repo.
 
 # WaveGAN
