@@ -51,14 +51,14 @@ For example, you can also set `--train_data_percentages` to use only a percentag
 
 You can also check out the `checkpoint_iters` variable. In case there are multiple GAN models checkpoints saved, you can specifiy which models you would like to load the weights from. Useful for creating the data for figure 4.2.
 
-4. In case you would also like the best resulted model from step 3 (after hyperopt), you can set `perform_test_best_hyperopt = True` (here)[https://github.com/cristiprg/wavegan-fork/blob/master/train_cnns.py#L47]. This will cause (after hyperopt)[https://github.com/cristiprg/wavegan-fork/blob/master/train_cnns.py#L576] to decode the optimized parameters and pass them to the (test script)[https://github.com/cristiprg/wavegan-fork/blob/master/test_cnn.py]. This test script trains a model with the given architecture and evaluates it against the given test set.
+4. In case you would also like the best resulted model from step 3 (after hyperopt), you can set `perform_test_best_hyperopt = True` [here](https://github.com/cristiprg/wavegan-fork/blob/master/train_cnns.py#L47). This will cause [after hyperopt](https://github.com/cristiprg/wavegan-fork/blob/master/train_cnns.py#L576) to decode the optimized parameters and pass them to the [test script](https://github.com/cristiprg/wavegan-fork/blob/master/test_cnn.py). This test script trains a model with the given architecture and evaluates it against the given test set.
 
-I strongly recommed using the LOG_FILE here. This log file contains general logs as well as the (results)[https://github.com/cristiprg/wavegan-fork/blob/master/test_cnn.py#L282]. This makes the entire system less complicated to debug and to maintain. To extract the results, simple bash commands to parse the text file do the job.
+I strongly recommed using the LOG_FILE here. This log file contains general logs as well as the [results](https://github.com/cristiprg/wavegan-fork/blob/master/test_cnn.py#L282). This makes the entire system less complicated to debug and to maintain. To extract the results, simple bash commands to parse the text file do the job.
 
 ```
 cat <LOG_FILE> | grep Result > results.txt
 ```
-Here, I used the word ("Result")[https://github.com/cristiprg/wavegan-fork/blob/master/test_cnn.py#L282] because it discriminates between the final results and rest of system logs. 
+Here, I used the word ["Result"](https://github.com/cristiprg/wavegan-fork/blob/master/test_cnn.py#L282) because it discriminates between the final results and rest of system logs. 
 
 5. If you would like to use another dataset, please follow the Donahue's instructions below to create build the datasets in the .tfrecord format. It is a good practice to create one set of multiple shards for _train_, one for _valid_ and one for _test_. Check the `--name` parameter.
 
