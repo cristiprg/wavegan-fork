@@ -1,6 +1,8 @@
 import tensorflow as tf
 import numpy as np
 
+from tensorflow.python.platform import tf_logging as logging
+logging.set_verbosity(tf.logging.INFO)
 
 def f0(): return tf.constant('0', dtype=tf.string)
 
@@ -117,7 +119,7 @@ def get_batch(
   dataset = dataset.shuffle(buffer_size=buffer_size, seed=seed)
 
   if exclude_class is not None:
-    print("Excluding class " + str(exclude_class) + "!")
+    logging.info("Excluding class " + str(exclude_class) + "!")
 
     dataset = dataset.filter(lambda x, label: tf.reshape(tf.not_equal(label, exclude_class), []))
 

@@ -73,14 +73,14 @@ def find_data_size(fps, exclude_class):
 
 
 batch_size_choice = [64, 128]
-layers_transferred_choice = [0, 1, 2, 3, 4]
+layers_transferred_choice = [1, 2, 3, 4]
 learning_rate_base_Adam_choice = [0.00001, 0.00003, 0.00005, 0.0001, 0.0003, 0.0005]
 learning_rate_mode_choice = ['constant', 'decaying']
 
 # Super ugly hack to choose layer_1_size > layer_2_size, and to be able to convert best (returned by hyperopt)
 # back to a json
 case1_layer1_choice = [2 ** x for x in range(3, 11)]
-case2_layer1_choice = [2 ** x for x in range(7, 11)]
+case2_layer1_choice = [2 ** x for x in range(10, 11)]
 case2_layer2_choice = [2 ** x for x in range(3, 7)]
 
 layers_choice = [
@@ -133,7 +133,7 @@ def transform_hyperopt_result_to_dict_again(hyperopt_param):
     return params
 
 
-def get_cnn_model(params, x, processing_specgan=True):
+def get_cnn_model(params, x, processing_specgan=True, return_last_activations=False):
     batch_size = params['batch_size']
     layers_transferred = params['layers_transferred']
     layer_1_size = params['layers'][1]
@@ -148,17 +148,23 @@ def get_cnn_model(params, x, processing_specgan=True):
 
     with tf.variable_scope('decision_layers'):
         if layer_1_size == 0:
+            last_activations = last_conv_tensor
             output = last_conv_tensor
         else:
             with tf.variable_scope('decision_layer_1'):
-                output = tf.layers.dense(last_conv_tensor, layer_1_size)
+                last_activations = tf.layers.dense(last_conv_tensor, layer_1_size, activation=tf.nn.sigmoid)
+                output = last_activations
 
             if layer_2_size != 0:
                 with tf.variable_scope('decision_layer_2'):
-                    output = tf.layers.dense(output, layer_2_size)
+                    last_activations = tf.layers.dense(output, layer_2_size, activation=tf.nn.sigmoid)
+                    output = last_activations
 
         with tf.variable_scope('cnn_output_layer'):
             output = tf.layers.dense(output, 10)
+
+    if return_last_activations:
+        return output, last_activations
 
     return output
 

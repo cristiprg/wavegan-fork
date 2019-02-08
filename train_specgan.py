@@ -18,7 +18,10 @@ import math
 
 import loader
 from specgan import SpecGANGenerator, SpecGANDiscriminator
+from util import find_data_size, SaveAtEnd
 
+from tensorflow.python.platform import tf_logging as logging
+logging.set_verbosity(tf.logging.INFO)
 
 """
   Constants
@@ -29,8 +32,8 @@ _D_Z = 100
 _CLIP_NSTD = 3.
 _LOG_EPS = 1e-6
 
-train_dataset_size = 18620
-train_data_percentage = 90
+train_dataset_size = None
+train_data_percentage = 80
 """
   Convert raw audio to spectrogram
 """
@@ -119,12 +122,40 @@ def f_to_img(X_norm):
   Trains a SpecGAN
 """
 def train(fps, args):
+  global train_dataset_size
+
   with tf.name_scope('loader'):
-    training_iterator = loader.get_batch(fps, args.train_batch_size, _WINDOW_LEN, args.data_first_window, repeat=False, initializable=True)
-    x_wav = training_iterator.get_next()
+    # This was actually not necessarily good. However, we can keep it as a point for 115 tfrecords
+    # train_fps, _ = loader.split_files_test_val(fps, train_data_percentage, 0)
+    # fps = train_fps
+    # fps = fps[:gan_train_data_size]
+
+    logging.info("Full training datasize = " + str(find_data_size(fps, None)))
+    length = len(fps)
+    fps = fps[:(int(train_data_percentage / 100.0 * length))]
+    logging.info("GAN training datasize (before exclude) = " + str(find_data_size(fps, None)))
+
+    if args.exclude_class is None:
+      pass
+    elif args.exclude_class != -1:
+      train_dataset_size = find_data_size(fps, args.exclude_class)
+      logging.info("GAN training datasize (after exclude) = " + str(train_dataset_size))
+    elif args.exclude_class == -1:
+      fps, _ = loader.split_files_test_val(fps, 0.9, 0)
+      train_dataset_size = find_data_size(fps, args.exclude_class)
+      logging.info("GAN training datasize (after exclude - random sampling) = " + str(train_dataset_size))
+    else:  # LOL :P
+      raise ValueError("args.exclude_class should be either [0, num_class), None, or -1 for random sampling 90%")
+
+    training_iterator = loader.get_batch(fps, args.train_batch_size, _WINDOW_LEN, args.data_first_window, repeat=True, initializable=True,
+                                         labels=True, exclude_class=args.exclude_class)
+    x_wav, _ = training_iterator.get_next()  # Important: ignore the labels
     print("x_wav.shape = %s" %str(x_wav.shape))
     x = t_to_f(x_wav, args.data_moments_mean, args.data_moments_std)
     print("x.shape = %s" % str(x.shape))
+
+    logging.info("train_dataset_size = " + str(train_dataset_size))
+
 
   # Make z vector
   z = tf.random_uniform([args.train_batch_size, _D_Z], -1., 1., dtype=tf.float32)
@@ -135,15 +166,15 @@ def train(fps, args):
   G_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='G')
 
   # Print G summary
-  print('-' * 80)
-  print('Generator vars')
+  logging.info('-' * 80)
+  logging.info('Generator vars')
   nparams = 0
   for v in G_vars:
     v_shape = v.get_shape().as_list()
     v_n = reduce(lambda x, y: x * y, v_shape)
     nparams += v_n
-    print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
-  print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
+    logging.info('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
+  logging.info('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
 
   # Summarize
   x_gl = f_to_t(x, args.data_moments_mean, args.data_moments_std, args.specgan_ngl)
@@ -167,16 +198,16 @@ def train(fps, args):
   D_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='D')
 
   # Print D summary
-  print('-' * 80)
-  print('Discriminator vars')
+  logging.info('-' * 80)
+  logging.info('Discriminator vars')
   nparams = 0
   for v in D_vars:
     v_shape = v.get_shape().as_list()
     v_n = reduce(lambda x, y: x * y, v_shape)
     nparams += v_n
-    print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
-  print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
-  print('-' * 80)
+    logging.info('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
+  logging.info('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
+  logging.info('-' * 80)
 
   # Make fake discriminator
   with tf.name_scope('D_G_z'), tf.variable_scope('D', reuse=True):
@@ -281,37 +312,58 @@ def train(fps, args):
 
   # Run training
   current_step = -1
-  scaffold = tf.train.Scaffold(local_init_op=tf.group(tf.local_variables_initializer(), training_iterator.initializer))
+  scaffold = tf.train.Scaffold(
+    local_init_op=tf.group(tf.local_variables_initializer(), training_iterator.initializer),
+    saver=tf.train.Saver(max_to_keep=3))
+  gpu_options = tf.GPUOptions(allow_growth=True,
+                              per_process_gpu_memory_fraction=0.5)
   with tf.train.MonitoredTrainingSession(
+      hooks=[SaveAtEnd(os.path.join(args.train_dir, 'model'))],
+      config=tf.ConfigProto(gpu_options=gpu_options),
       scaffold=scaffold,
       checkpoint_dir=args.train_dir,
       save_checkpoint_secs=args.train_save_secs,
-      save_summaries_secs=args.train_summary_secs) as sess:
+      save_summaries_secs=args.train_summary_secs,
+  ) as sess:
     # sess.run(training_iterator.initializer)
     while True:
-      print("Global step: " + str(sess.run(tf.train.get_or_create_global_step())))
-      # Train discriminator
-      for i in range(args.specgan_disc_nupdates):
-        try:
-          sess.run(D_train_op)
-          current_step += 1
-          # Stop training after x% of training data seen
-          if current_step * args.train_batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
-            print("Stopping at batch: " + str(current_step))
-            current_step = -1
-            sess.run(training_iterator.initializer)
+      global_step = sess.run(tf.train.get_or_create_global_step())
+      logging.info("Global step: " + str(global_step))
 
-        except tf.errors.OutOfRangeError:
-          # End of training dataset
-          if train_data_percentage != 100:
-            print("ERROR: end of dataset for only part of data! Achieved end of training dataset with train_data_percentage = " + str(train_data_percentage))
-          else:
-            current_step = -1
-            sess.run(training_iterator.initializer)
+      if args.stop_at_global_step != 0 and global_step >= args.stop_at_global_step:
+        logging.info("Stopping because args.stop_at_global_step is set to  " + str(args.stop_at_global_step))
+        break
+        # last_saver.save(sess, os.path.join(args.train_dir, 'model'), global_step=global_step)
+
+      # Train discriminator
+      # for i in range(args.specgan_disc_nupdates):
+      #   try:
+      #     sess.run(D_train_op)
+      #     current_step += 1
+      #     # Stop training after x% of training data seen
+      #     if current_step * args.train_batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
+      #       logging.info("Stopping at batch: " + str(current_step))
+      #       current_step = -1
+      #       sess.run(training_iterator.initializer)
+      #
+      #   except tf.errors.OutOfRangeError:
+      #     # End of training dataset
+      #     if train_data_percentage != 100:
+      #       logging.info("ERROR: end of dataset for only part of data! Achieved end of training dataset with train_data_percentage = " + str(train_data_percentage))
+      #     else:
+      #       current_step = -1
+      #       sess.run(training_iterator.initializer)
+
+      # Train discriminator
+      try:
+        for i in range(args.specgan_disc_nupdates):
+          sess.run(D_train_op)
 
         # Enforce Lipschitz constraint for WGAN
         if D_clip_weights is not None:
           sess.run(D_clip_weights)
+      except tf.errors.OutOfRangeError:
+          sess.run(training_iterator.initializer)
 
       # Train generator
       sess.run(G_train_op)
@@ -595,7 +647,12 @@ def incept(args):
   Calculates and saves dataset moments
 """
 def moments(fps, args):
-  x = loader.get_batch(fps, 1, _WINDOW_LEN, args.data_first_window, repeat=False)[0, :, 0]
+  # x = loader.get_batch(fps, 1, _WINDOW_LEN, args.data_first_window, repeat=False)[0, :, 0]
+  training_iterator = loader.get_batch(fps, 1, _WINDOW_LEN, args.data_first_window, repeat=False,
+                                       initializable=True,
+                                       labels=True, exclude_class=args.exclude_class)
+  x, _ = training_iterator.get_next()  # Important: ignore the labels
+  x = x[0, :, 0]
 
   X = tf.contrib.signal.stft(x, 256, 128, pad_end=True)
   X_mag = tf.abs(X)
@@ -603,6 +660,7 @@ def moments(fps, args):
 
   _X_lmags = []
   with tf.Session() as sess:
+    sess.run(training_iterator.initializer)
     while True:
       try:
         _X_lmag = sess.run(X_lmag)
@@ -630,6 +688,9 @@ if __name__ == '__main__':
       help='Training directory')
 
   data_args = parser.add_argument_group('Data')
+  data_args.add_argument('--exclude_class', type=int)
+  data_args.add_argument('--stop_at_global_step', type=int, help='If set, the program saves a checkpoint and '
+                                                                 'interrupts the training')
   data_args.add_argument('--data_dir', type=str,
       help='Data directory')
   data_args.add_argument('--data_first_window', action='store_true', dest='data_first_window',
@@ -676,6 +737,8 @@ if __name__ == '__main__':
       help='Number of groups to test')
 
   parser.set_defaults(
+    exclude_class=None,
+    stop_at_global_step=0,
     data_dir=None,
     data_first_window=False,
     specgan_kernel_len=5,
@@ -739,8 +802,10 @@ if __name__ == '__main__':
 
   if args.mode == 'train':
     infer(args)
-    train(fps, args)
+    fps += glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')  # add the valid* records to training
+    train(sorted(fps), args)
   elif args.mode == 'moments':
+    fps += glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')  # add the valid* records to training
     moments(fps, args)
   elif args.mode == 'preview':
     preview(args)

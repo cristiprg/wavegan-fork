@@ -19,6 +19,9 @@ import math
 
 import loader
 from wavegan import WaveGANGenerator, WaveGANDiscriminator
+from util import find_data_size, SaveAtEnd
+from tensorflow.python.platform import tf_logging as logging
+logging.set_verbosity(tf.logging.INFO)
 
 
 """
@@ -28,17 +31,44 @@ _FS = 16000
 _WINDOW_LEN = 16384
 _D_Z = 100
 
-train_dataset_size = 18620
-train_data_percentage = 90
+train_dataset_size = None
+# train_data_percentage = None
 """
   Trains a WaveGAN
 """
 def train(fps, args):
+  # global train_dataset_size
+  # global train_data_percentage
+  train_data_percentage = args.train_data_percentage
   with tf.name_scope('loader'):
-    training_iterator = loader.get_batch(fps, args.train_batch_size, _WINDOW_LEN, args.data_first_window, repeat=False,
-                                         initializable=True)
-    x = training_iterator.get_next()
+    # This was actually not necessarily good. However, we can keep it as a point for 115 tfrecords
+    # train_fps, _ = loader.split_files_test_val(fps, train_data_percentage, 0)
+    # fps = train_fps
+    # fps = fps[:gan_train_data_size]
 
+    logging.info("Full training datasize = " + str(find_data_size(fps, None)))
+    length = len(fps)
+    fps = fps[:(int(train_data_percentage / 100.0 * length))]
+    logging.info("GAN training datasize (before exclude) = " + str(find_data_size(fps, None)))
+
+    if args.exclude_class is None:
+      pass
+    elif args.exclude_class != -1:
+      train_dataset_size = find_data_size(fps, args.exclude_class)
+      logging.info("GAN training datasize (after exclude) = " + str(train_dataset_size))
+    elif args.exclude_class == -1:
+      fps, _ = loader.split_files_test_val(fps, 0.9, 0)
+      train_dataset_size = find_data_size(fps, args.exclude_class)
+      logging.info("GAN training datasize (after exclude - random sampling) = " + str(train_dataset_size))
+    else:  # LOL :P
+      raise ValueError("args.exclude_class should be either [0, num_class), None, or -1 for random sampling 90%")
+
+    training_iterator = loader.get_batch(fps, args.train_batch_size, _WINDOW_LEN, args.data_first_window, repeat=True, initializable=True,
+                                         labels=True, exclude_class=args.exclude_class)
+    x, _ = training_iterator.get_next()  # Important: ignore the labels
+    print("x_wav.shape = %s" %str(x.shape))
+
+    logging.info("train_dataset_size = " + str(train_dataset_size))
   # Make z vector
   z = tf.random_uniform([args.train_batch_size, _D_Z], -1., 1., dtype=tf.float32)
 
@@ -191,39 +221,54 @@ def train(fps, args):
 
   # Run training
   current_step = -1
-  scaffold = tf.train.Scaffold(local_init_op=tf.group(tf.local_variables_initializer(), training_iterator.initializer))
+  scaffold = tf.train.Scaffold(
+    local_init_op=tf.group(tf.local_variables_initializer(), training_iterator.initializer),
+    saver = tf.train.Saver(max_to_keep=5))
+
   with tf.train.MonitoredTrainingSession(
+      hooks=[SaveAtEnd(os.path.join(args.train_dir, 'model'))],
       scaffold=scaffold,
       checkpoint_dir=args.train_dir,
       save_checkpoint_secs=args.train_save_secs,
       save_summaries_secs=args.train_summary_secs) as sess:
     while True:
+      global_step = sess.run(tf.train.get_or_create_global_step())
+      logging.info("Global step: " + str(global_step))
+
+      if args.stop_at_global_step != 0 and global_step >= args.stop_at_global_step:
+        logging.info("Stopping because args.stop_at_global_step is set to  " + str(args.stop_at_global_step))
+        break
       # Train discriminator
-      for i in range(args.wavegan_disc_nupdates):
-        try:
-          sess.run(D_train_op)
-          current_step += 1
+      # for i in range(args.wavegan_disc_nupdates):
+      #   try:
+      #     sess.run(D_train_op)
+      #     current_step += 1
+      #
+      #     # Stop training after x% of training data seen
+      #     if current_step * args.train_batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
+      #       print("Stopping at batch: " + str(current_step))
+      #       current_step = -1
+      #       sess.run(training_iterator.initializer)
+      #
+      #   except tf.errors.OutOfRangeError:
+      #     # End of training dataset
+      #     if train_data_percentage != 100:
+      #       print(
+      #         "ERROR: end of dataset for only part of data! Achieved end of training dataset with train_data_percentage = " + str(
+      #           train_data_percentage))
+      #     else:
+      #       current_step = -1
+      #       sess.run(training_iterator.initializer)
 
-          # Stop training after x% of training data seen
-          if current_step * args.train_batch_size > math.ceil(train_dataset_size * train_data_percentage / 100.0):
-            print("Stopping at batch: " + str(current_step))
-            current_step = -1
-            sess.run(training_iterator.initializer)
-
-        except tf.errors.OutOfRangeError:
-          # End of training dataset
-          if train_data_percentage != 100:
-            print(
-              "ERROR: end of dataset for only part of data! Achieved end of training dataset with train_data_percentage = " + str(
-                train_data_percentage))
-          else:
-            current_step = -1
-            sess.run(training_iterator.initializer)
-
+      try:
+        for i in range(args.wavegan_disc_nupdates):
+            sess.run(D_train_op)
 
         # Enforce Lipschitz constraint for WGAN
         if D_clip_weights is not None:
           sess.run(D_clip_weights)
+      except tf.errors.OutOfRangeError:
+          sess.run(training_iterator.initializer)
 
       # Train generator
       sess.run(G_train_op)
@@ -544,6 +589,10 @@ if __name__ == '__main__':
       help='Training directory')
 
   data_args = parser.add_argument_group('Data')
+  data_args.add_argument('--exclude_class', type=int)
+  data_args.add_argument('--stop_at_global_step', type=int, help='If set, the program saves a checkpoint and '
+                                                                 'interrupts the training')
+  data_args.add_argument('--train_data_percentage', type=int, help='Take the first train_data_percentage % of the data')
   data_args.add_argument('--data_dir', type=str,
       help='Data directory')
   data_args.add_argument('--data_first_window', action='store_true', dest='data_first_window',
@@ -592,6 +641,9 @@ if __name__ == '__main__':
       help='Number of groups to test')
 
   parser.set_defaults(
+    exclude_class=None,
+    stop_at_global_step=0,
+    train_data_percentage=100,
     data_dir=None,
     data_first_window=False,
     wavegan_kernel_len=25,
@@ -647,8 +699,9 @@ if __name__ == '__main__':
     fps = glob.glob(os.path.join(args.data_dir, split) + '*.tfrecord')
 
   if args.mode == 'train':
+    fps += glob.glob(os.path.join(args.data_dir, "valid") + '*.tfrecord')  # add the valid* records to training
     infer(args)
-    train(fps, args)
+    train(sorted(fps), args)
   elif args.mode == 'preview':
     preview(args)
   elif args.mode == 'incept':

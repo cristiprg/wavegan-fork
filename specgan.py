@@ -1,5 +1,5 @@
 import tensorflow as tf
-
+from tensorflow.python.platform import tf_logging as logging
 
 def conv2d_transpose(
     inputs,
@@ -29,7 +29,7 @@ def conv2d_transpose(
       upsampler = tf.image.resize_bicubic
 
     x = upsampler(x, [h * stride, w * stride])
-    
+
     return tf.layers.conv2d(
         x,
         filters,
@@ -124,7 +124,8 @@ def SpecGANDiscriminator(
     x,
     kernel_len=5,
     dim=64,
-    use_batchnorm=False):
+    use_batchnorm=False,
+    seed=0):
   batch_size = tf.shape(x)[0]
 
   if use_batchnorm:
@@ -134,36 +135,42 @@ def SpecGANDiscriminator(
 
   # Layer 0
   # [128, 128, 1] -> [64, 64, 64]
+  # print("WARNING: Using XAVIER initialization!")
   output = x
   with tf.variable_scope('downconv_0'):
-    output = tf.layers.conv2d(output, dim, kernel_len, 2, padding='SAME')
+    output = tf.layers.conv2d(output, dim, kernel_len, 2, padding='SAME',)
+                              # kernel_initializer=tf.contrib.layers.xavier_initializer(uniform=False, seed=seed))
   output = lrelu(output)
 
   # Layer 1
   # [64, 64, 64] -> [32, 32, 128]
   with tf.variable_scope('downconv_1'):
-    output = tf.layers.conv2d(output, dim * 2, kernel_len, 2, padding='SAME')
+    output = tf.layers.conv2d(output, dim * 2, kernel_len, 2, padding='SAME',)
+                              # kernel_initializer=tf.contrib.layers.xavier_initializer(uniform=False, seed=seed))
     output = batchnorm(output)
   output = lrelu(output)
 
   # Layer 2
   # [32, 32, 128] -> [16, 16, 256]
   with tf.variable_scope('downconv_2'):
-    output = tf.layers.conv2d(output, dim * 4, kernel_len, 2, padding='SAME')
+    output = tf.layers.conv2d(output, dim * 4, kernel_len, 2, padding='SAME',)
+                              # kernel_initializer=tf.contrib.layers.xavier_initializer(uniform=False, seed=seed))
     output = batchnorm(output)
   output = lrelu(output)
 
   # Layer 3
   # [16, 16, 256] -> [8, 8, 512]
   with tf.variable_scope('downconv_3'):
-    output = tf.layers.conv2d(output, dim * 8, kernel_len, 2, padding='SAME')
+    output = tf.layers.conv2d(output, dim * 8, kernel_len, 2, padding='SAME',)
+                              # kernel_initializer=tf.contrib.layers.xavier_initializer(uniform=False, seed=seed))
     output = batchnorm(output)
   output = lrelu(output)
 
   # Layer 4
   # [8, 8, 512] -> [4, 4, 1024]
   with tf.variable_scope('downconv_4'):
-    output = tf.layers.conv2d(output, dim * 16, kernel_len, 2, padding='SAME')
+    output = tf.layers.conv2d(output, dim * 16, kernel_len, 2, padding='SAME',)
+                              # kernel_initializer=tf.contrib.layers.xavier_initializer(uniform=False, seed=seed))
     output = batchnorm(output)
   output = lrelu(output)
 
