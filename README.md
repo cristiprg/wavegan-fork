@@ -60,6 +60,7 @@ cat <LOG_FILE> | grep Result > results.txt
 ```
 Here, I used the word ("Result")[https://github.com/cristiprg/wavegan-fork/blob/master/test_cnn.py#L282] because it discriminates between the final results and rest of system logs. 
 
+5. If you would like to use another dataset, please follow the Donahue's instructions below to create build the datasets in the .tfrecord format. It is a good practice to create one set of multiple shards for _train_, one for _valid_ and one for _test_. Check the `--name` parameter.
 
 Below this row is the original content of Donahue's wavegan repo.
 
